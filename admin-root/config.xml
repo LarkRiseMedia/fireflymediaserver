@@ -102,7 +102,7 @@
         <item id="general:extensions">
             <name>Extensions</name>
             <short_description></short_description>
-            <type size="20">text</type>
+            <type size="40">text</type>
         </item>
         <item id="general:playlist">
             <name>Playlist File</name>
