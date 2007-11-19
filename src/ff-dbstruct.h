@@ -60,6 +60,7 @@
 #define SG_BITS_PER_SAMPLE 41
 #define SG_ALBUM_ARTIST    42
 
+
 /* Packed and unpacked formats */
 typedef struct tag_mp3file {
     char *path;
@@ -120,7 +121,7 @@ typedef struct tag_mp3file {
     uint32_t bits_per_sample;
 
     char *album_artist;
-} MP3FILE;
+} MP3FILE,MEDIA_NATIVE;
 
 typedef struct tag_m3ufile {
     uint32_t id;          /**< integer id (miid) */
@@ -131,7 +132,7 @@ typedef struct tag_m3ufile {
     uint32_t db_timestamp;/**< time last updated */
     char *path;           /**< path of underlying playlist (if type 2) */
     uint32_t index;       /**< index of playlist for paths with multiple playlists */
-} M3UFILE;
+} M3UFILE, PLAYLIST_NATIVE;
 
 typedef struct tag_packed_m3ufile {
     char *id;
@@ -142,7 +143,7 @@ typedef struct tag_packed_m3ufile {
     char *db_timestamp;
     char *path;
     char *index;
-} PACKED_M3UFILE;
+} PACKED_M3UFILE,PLAYLIST_STRING;
 
 typedef struct tag_packed_mp3file {
     char *id;
@@ -188,7 +189,41 @@ typedef struct tag_packed_mp3file {
     char *contentrating;
     char *bits_per_sample;
     char *album_artist;
-} PACKED_MP3FILE;
+} PACKED_MP3FILE, MEDIA_STRING;
+
+/*
+ * since database backends may produce rows in either format,
+ * it's advantageous to allow them to provide rows in the fastest format
+ * it can.  If we *have* to have a media object or playlist in a
+ * specific style, we can use convenience functions to convert them.
+ */
+
+#define OBJECT_TYPE_NATIVE     0  /* Native, with all strings strduped */
+#define OBJECT_TYPE_STRING     1  /* Array of strings (sql style) */
+
+typedef struct mediaobject_t {
+    int kind;
+    int packed;
+    union {
+        MEDIA_NATIVE *__pmnative;
+        MEDIA_STRING *__pmstring;
+    } __data_u;
+} MEDIAOBJECT;
+
+#define pmstring __data_u.__pmstring
+#define pmnative __data_u.__pmnative
+
+typedef struct playlistobject_t {
+    int kind;
+    int packed;
+    union {
+        PLAYLIST_NATIVE *__ppnative;
+        PLAYLIST_STRING *__ppstring;
+    } __data_u;
+} PLAYLISTOBJECT;
+
+#define ppstring __data_u.__ppstring
+#define ppnative __data_u.__ppnative
 
 #define PL_STATICWEB  0
 #define PL_SMART      1

@@ -28,9 +28,9 @@ typedef struct tag_rsp_privinfo {
 
 /* Forwards */
 PLUGIN_INFO *plugin_info(void);
-void plugin_handler(WS_CONNINFO *pwsc);
-int plugin_can_handle(WS_CONNINFO *pwsc);
-int plugin_auth(WS_CONNINFO *pwsc, char *username, char *password);
+void rsp_handler(WS_CONNINFO *pwsc);
+int rsp_can_handle(WS_CONNINFO *pwsc);
+int rsp_auth(WS_CONNINFO *pwsc, char *username, char *password);
 void rsp_info(WS_CONNINFO *pwsc, PRIVINFO *ppi);
 void rsp_db(WS_CONNINFO *pwsc, PRIVINFO *ppi);
 void rsp_playlist(WS_CONNINFO *pwsc, PRIVINFO *ppi);
@@ -39,8 +39,8 @@ void rsp_stream(WS_CONNINFO *pwsc, PRIVINFO *ppi);
 void rsp_error(WS_CONNINFO *pwsc, PRIVINFO *ppi, int eno, char *estr);
 
 /* Globals */
-PLUGIN_OUTPUT_FN _pofn = { plugin_can_handle, plugin_handler, plugin_auth };
-PLUGIN_REND_INFO _pri[] = {
+PLUGIN_OUTPUT_FN _rsp_pofn = { rsp_can_handle, rsp_handler, rsp_auth };
+PLUGIN_REND_INFO _rsp_pri[] = {
     { "_rsp._tcp", NULL },
     { NULL, NULL }
 };
@@ -49,10 +49,10 @@ PLUGIN_INFO _pi = {
     PLUGIN_VERSION,      /* version */
     PLUGIN_OUTPUT,       /* type */
     "rsp/" VERSION,      /* server */
-    &_pofn,              /* output fns */
+    &_rsp_pofn,              /* output fns */
     NULL,                /* event fns */
     NULL,                /* transcode fns */
-    _pri,                /* rend info */
+    _rsp_pri,                /* rend info */
     NULL                 /* transcode info */
 };
 
@@ -156,10 +156,12 @@ PLUGIN_INFO *plugin_info(void) {
 /**
  * see if the plugin should handle this request
  */
-int plugin_can_handle(WS_CONNINFO *pwsc) {
+int rsp_can_handle(WS_CONNINFO *pwsc) {
     pi_log(E_DBG,"Checking url %s\n",pi_ws_uri(pwsc));
-    if(strncasecmp(pi_ws_uri(pwsc),"/rsp/",5) == 0)
+
+    if(strncasecmp(pi_ws_uri(pwsc),"/rsp/",5) == 0) {
         return TRUE;
+    }
     return FALSE;
 }
 
@@ -167,14 +169,14 @@ int plugin_can_handle(WS_CONNINFO *pwsc) {
  * check for auth.  Kind of a ham-handed implementation, but
  * works.
  */
-int plugin_auth(WS_CONNINFO *pwsc, char *username, char *password) {
+int rsp_auth(WS_CONNINFO *pwsc, char *username, char *password) {
     return pi_ws_matchesrole(pwsc,username,password,"user");
 }
 
 /**
  * dispatch handler for web stuff
  */
-void plugin_handler(WS_CONNINFO *pwsc) {
+void rsp_handler(WS_CONNINFO *pwsc) {
     char *string, *save, *token;
     PRIVINFO *ppi;
     int elements;

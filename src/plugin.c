@@ -294,9 +294,12 @@ int plugin_url_candispatch(WS_CONNINFO *pwsc) {
     ppi = _plugin_list.next;
     while(ppi) {
         if(ppi->pinfo->type & PLUGIN_OUTPUT) {
+            DPRINTF(E_DBG,L_PLUG,"Checking %s with %s\n",pwsc->uri,ppi->pinfo->server);
             if((ppi->pinfo->output_fns)->can_handle(pwsc)) {
+                DPRINTF(E_DBG,L_PLUG,"From plugin: success\n");
                 return TRUE;
             }
+            DPRINTF(E_DBG,L_PLUG,"From plugin: false\n");
         }
         ppi = ppi->next;
     }

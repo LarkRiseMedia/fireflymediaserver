@@ -23,7 +23,8 @@ typedef enum {
     l_plugin,
     l_memdebug,
     l_upnp,
-    l_last
+    l_last,
+    l_pl
 } ff_lock_t;
 
 /* debugging lock wrappers */

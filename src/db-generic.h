@@ -97,7 +97,6 @@ extern MP3FILE *db_fetch_item(char **pe, int id);
 extern MP3FILE *db_fetch_path(char **pe, char *path, int index);
 extern M3UFILE *db_fetch_playlist(char **pe, char *path, int index);
 
-
 /* Holdover functions from old db interface...
  * should these be removed?  Refactored?
  */

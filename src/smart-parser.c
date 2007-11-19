@@ -21,6 +21,7 @@
 
 #include "daapd.h"
 #include "err.h"
+#include "ff-dbstruct.h"
 
 #ifdef HAVE_SQL
 extern int db_sql_escape(char *buffer, int *size, char *fmt, ...);
@@ -29,9 +30,11 @@ extern int db_sql_escape(char *buffer, int *size, char *fmt, ...);
 
 typedef struct tag_token {
     int token_id;
+    int field_id;
     union {
         char *cvalue;
-        int ivalue;
+        uint32_t ivalue;
+        uint64_t ivalue64;
         time_t tvalue;
     } data;
 } SP_TOKEN;
@@ -45,10 +48,12 @@ typedef struct tag_sp_node {
     int op;
     int op_type;
     int not_flag;
+    int field_id;
 
     union {
         struct tag_sp_node *node;
         int ivalue;
+        int ivalue64;
         char *cvalue;
         time_t tvalue;
     } right;
@@ -58,7 +63,8 @@ typedef struct tag_sp_node {
 #define SP_OPTYPE_ANDOR   1
 #define SP_OPTYPE_STRING  2
 #define SP_OPTYPE_INT     3
-#define SP_OPTYPE_DATE    4
+#define SP_OPTYPE_INT64   4
+#define SP_OPTYPE_DATE    5
 
 #define SP_HINT_NONE      0
 #define SP_HINT_STRING    1
@@ -121,8 +127,9 @@ typedef struct tag_sp_node {
 
 #define T_STRING        0x2001
 #define T_INT_FIELD     0x2002
-#define T_STRING_FIELD  0x2003
-#define T_DATE_FIELD    0x2004
+#define T_INT64_FIELD   0x2003
+#define T_STRING_FIELD  0x2004
+#define T_DATE_FIELD    0x2005
 
 #define T_OPENPAREN     0x0005
 #define T_CLOSEPAREN    0x0006
@@ -251,7 +258,7 @@ FIELDLOOKUP sp_fields_0[] = {
     { T_STRING_FIELD, "url", NULL },
     { T_INT_FIELD, "bitrate", NULL },
     { T_INT_FIELD, "samplerate", NULL },
-    { T_INT_FIELD, "song_length", NULL },
+    { T_INT_FIELD, "song_length", NULL },  // FIXME: int64
     { T_INT_FIELD, "file_size", NULL },
     { T_INT_FIELD, "year", NULL },
     { T_INT_FIELD, "track", NULL },
@@ -269,7 +276,7 @@ FIELDLOOKUP sp_fields_0[] = {
     { T_DATE_FIELD, "time_modified", NULL },
     { T_DATE_FIELD, "time_played", NULL },
     { T_DATE_FIELD, "db_timestamp", NULL },
-    { T_INT_FIELD, "sample_count", NULL },
+    { T_INT_FIELD, "sample_count", NULL }, // FIXME: int64
     { T_INT_FIELD, "force_update", NULL },
     { T_STRING_FIELD, "codectype", NULL },
     { T_INT_FIELD, "idx", NULL },
@@ -322,7 +329,7 @@ FIELDLOOKUP sp_fields_1[] = {
     { T_STRING_FIELD, "daap.songformat", "type" },
     { T_STRING_FIELD, "daap.songgenre", "genre" },
     { T_INT_FIELD, "daap.songsamplerate", "samplerate" },
-    { T_INT_FIELD, "daap.songsize", "file_size" },
+    { T_INT64_FIELD, "daap.songsize", "file_size" },
     //    { T_INT_FIELD,    "daap.songstarttime",   0 },
     { T_INT_FIELD, "daap.songstoptime", "song_length" },
     { T_INT_FIELD, "daap.songtime", "song_length" },
@@ -335,6 +342,53 @@ FIELDLOOKUP sp_fields_1[] = {
 
 FIELDLOOKUP *sp_fields[2] = {
     sp_fields_0, sp_fields_1
+};
+
+#define OFFSET_OF(__type, __field)      ((size_t) (&((__type*) 0)->__field))
+int pl_offsets[] = {
+    OFFSET_OF(MEDIA_NATIVE,id),            // 0
+    OFFSET_OF(MEDIA_NATIVE,path),
+    OFFSET_OF(MEDIA_NATIVE,fname),
+    OFFSET_OF(MEDIA_NATIVE,title),
+    OFFSET_OF(MEDIA_NATIVE,artist),
+    OFFSET_OF(MEDIA_NATIVE,album),         // 5
+    OFFSET_OF(MEDIA_NATIVE,genre),
+    OFFSET_OF(MEDIA_NATIVE,comment),
+    OFFSET_OF(MEDIA_NATIVE,type),
+    OFFSET_OF(MEDIA_NATIVE,composer),
+    OFFSET_OF(MEDIA_NATIVE,orchestra),     // 10
+    OFFSET_OF(MEDIA_NATIVE,conductor),
+    OFFSET_OF(MEDIA_NATIVE,grouping),
+    OFFSET_OF(MEDIA_NATIVE,url),
+    OFFSET_OF(MEDIA_NATIVE,bitrate),
+    OFFSET_OF(MEDIA_NATIVE,samplerate),    // 15
+    OFFSET_OF(MEDIA_NATIVE,song_length),
+    OFFSET_OF(MEDIA_NATIVE,file_size),
+    OFFSET_OF(MEDIA_NATIVE,year),
+    OFFSET_OF(MEDIA_NATIVE,track),
+    OFFSET_OF(MEDIA_NATIVE,total_tracks),  // 20
+    OFFSET_OF(MEDIA_NATIVE,disc),
+    OFFSET_OF(MEDIA_NATIVE,total_discs),
+    OFFSET_OF(MEDIA_NATIVE,bpm),
+    OFFSET_OF(MEDIA_NATIVE,compilation),
+    OFFSET_OF(MEDIA_NATIVE,rating),        // 25
+    OFFSET_OF(MEDIA_NATIVE,play_count),
+    OFFSET_OF(MEDIA_NATIVE,data_kind),
+    OFFSET_OF(MEDIA_NATIVE,item_kind),
+    OFFSET_OF(MEDIA_NATIVE,description),
+    OFFSET_OF(MEDIA_NATIVE,time_added),    // 30
+    OFFSET_OF(MEDIA_NATIVE,time_modified),
+    OFFSET_OF(MEDIA_NATIVE,time_played),
+    OFFSET_OF(MEDIA_NATIVE,db_timestamp),
+    OFFSET_OF(MEDIA_NATIVE,disabled),
+    OFFSET_OF(MEDIA_NATIVE,sample_count),  // 35
+    OFFSET_OF(MEDIA_NATIVE,force_update),
+    OFFSET_OF(MEDIA_NATIVE,codectype),
+    OFFSET_OF(MEDIA_NATIVE,index),
+    OFFSET_OF(MEDIA_NATIVE,has_video),
+    OFFSET_OF(MEDIA_NATIVE,contentrating), // 40
+    OFFSET_OF(MEDIA_NATIVE,bits_per_sample),
+    OFFSET_OF(MEDIA_NATIVE,album_artist)
 };
 
 typedef struct tag_parsetree {
@@ -386,20 +440,20 @@ char *sp_errorstrings[] = {
 };
 
 /* Forwards */
-SP_NODE *sp_parse_phrase(PARSETREE tree);
-SP_NODE *sp_parse_oexpr(PARSETREE tree);
-SP_NODE *sp_parse_aexpr(PARSETREE tree);
-SP_NODE *sp_parse_expr(PARSETREE tree);
-SP_NODE *sp_parse_criterion(PARSETREE tree);
-SP_NODE *sp_parse_string_criterion(PARSETREE tree);
-SP_NODE *sp_parse_int_criterion(PARSETREE tree);
-SP_NODE *sp_parse_date_criterion(PARSETREE tree);
-time_t sp_parse_date(PARSETREE tree);
-time_t sp_parse_date_interval(PARSETREE tree);
-void sp_free_node(SP_NODE *node);
-int sp_node_size(SP_NODE *node);
-void sp_set_error(PARSETREE tree,int error);
-
+static SP_NODE *sp_parse_phrase(PARSETREE tree);
+static SP_NODE *sp_parse_oexpr(PARSETREE tree);
+static SP_NODE *sp_parse_aexpr(PARSETREE tree);
+static SP_NODE *sp_parse_expr(PARSETREE tree);
+static SP_NODE *sp_parse_criterion(PARSETREE tree);
+static SP_NODE *sp_parse_string_criterion(PARSETREE tree);
+static SP_NODE *sp_parse_int_criterion(PARSETREE tree);
+static SP_NODE *sp_parse_date_criterion(PARSETREE tree);
+static time_t sp_parse_date(PARSETREE tree);
+static time_t sp_parse_date_interval(PARSETREE tree);
+static void sp_free_node(SP_NODE *node);
+static int sp_node_size(SP_NODE *node);
+static void sp_set_error(PARSETREE tree,int error);
+static int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo);
 
 /**
  * simple logging funcitons
@@ -480,8 +534,10 @@ int sp_scan(PARSETREE tree, int hint) {
     char *dst, *src;
 
     if(tree->token.token_id & 0x2000) {
-        if(tree->token.data.cvalue)
+        if(tree->token.data.cvalue) {
             free(tree->token.data.cvalue);
+            tree->token.data.cvalue = NULL;
+        }
     }
 
     if(tree->token.token_id == T_EOF) {
@@ -520,6 +576,7 @@ int sp_scan(PARSETREE tree, int hint) {
     /* check symbols */
     if(!tree->in_string) {
         pfield=sp_symbols[tree->token_list];
+        tree->token.field_id = 0;
         while(pfield->name) {
             if(!strncmp(pfield->name,tree->current,strlen(pfield->name))) {
                 /* that's a match */
@@ -528,6 +585,7 @@ int sp_scan(PARSETREE tree, int hint) {
                 return pfield->type;
             }
             pfield++;
+            tree->token.field_id++;
         }
     }
 
@@ -958,6 +1016,7 @@ SP_NODE *sp_parse_criterion(PARSETREE tree) {
     }
     memset(pnew,0x00,sizeof(SP_NODE));
     pnew->left.field = strdup(tree->token.data.cvalue);
+    pnew->field_id = tree->token.field_id;
 
     sp_scan(tree,SP_HINT_NONE); /* scan past the string field we know is there */
 
@@ -1034,6 +1093,7 @@ SP_NODE *sp_parse_criterion(PARSETREE tree) {
     }
     memset(pnew,0x00,sizeof(SP_NODE));
     pnew->left.field = strdup(tree->token.data.cvalue);
+    pnew->field_id = tree->token.field_id;
 
     sp_scan(tree,SP_HINT_NONE); /* scan past the int field we know is there */
 
@@ -1109,6 +1169,7 @@ SP_NODE *sp_parse_date_criterion(PARSETREE tree) {
     }
     memset(pnew,0x00,sizeof(SP_NODE));
     pnew->left.field = strdup(tree->token.data.cvalue);
+    pnew->field_id = tree->token.field_id;
 
     sp_scan(tree,SP_HINT_NONE); /* scan past the date field we know is there */
 
@@ -1521,3 +1582,172 @@ void sp_set_error(PARSETREE tree, int error) {
     return;
 }
 
+/**
+ * see if the given parse tree matches the passed mediaobject
+ *
+ * @param tree parsetree to chedk
+ * @param pmo media object to compare to parse tree
+ * @returns TRUE if successful match, FALSE otherwise
+ */
+int sp_matches(PARSETREE tree, MEDIAOBJECT *pmo) {
+    return sp_node_matches(tree->tree, pmo);
+}
+
+/**
+ * see if the given node tree matches the passed mediaobject
+ *
+ * @param node node to check
+ * @param pmo media object to compare to parse tree
+ * @returns TRUE if successful match, FALSE otherwise
+ */
+int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo) {
+    char *val_string;
+    uint32_t val_uint32;
+    uint64_t val_uint64;
+    time_t val_date;
+    int result = 0;
+    int offset;
+
+    if(node->op_type == SP_OPTYPE_ANDOR) {
+        if(node->op == T_AND) {
+            return (sp_node_matches(node->right.node,pmo) &&
+                    sp_node_matches(node->left.node,pmo));
+        } else {
+            return (sp_node_matches(node->right.node,pmo) ||
+                    sp_node_matches(node->left.node,pmo));
+        }
+    }
+
+    // Actually check the node
+    if(node->op_type == SP_OPTYPE_STRING) {
+        if(pmo->kind == OBJECT_TYPE_STRING) {
+            val_string = ((char*)pmo->pmstring) + node->field_id;
+        } else {
+            val_string = (char*) (((void*)pmo->pmnative)
+                                  + pl_offsets[node->field_id]);
+        }
+
+        switch(node->op) {
+        case T_INCLUDES:
+            if(strcasestr(val_string,node->right.cvalue) == 0)
+                result = 1;
+            break;
+        case T_STARTSWITH:
+            if(strncasecmp(val_string,node->right.cvalue,strlen(node->right.cvalue)) == 0)
+                result = 1;
+            break;
+        case T_ENDSWITH:
+            offset = strlen(val_string) - strlen(node->right.cvalue);
+            if(offset >= 0) {
+                if(strncasecmp(val_string,node->right.cvalue+offset,strlen(node->right.cvalue)) == 0)
+                    result = 1;
+            }
+            break;
+        case T_EQUAL:
+            if(strcasecmp(val_string, node->right.cvalue) == 0)
+                result = 1;
+            break;
+        default:
+            DPRINTF(E_FATAL,L_PARSE,"Bad string op\n");
+            break;
+        }
+    } else if(node->op_type == SP_OPTYPE_INT) {
+        if(pmo->kind == OBJECT_TYPE_STRING) {
+            val_uint32 = strtoul(((char*)pmo->pmstring) + node->field_id,NULL,10);
+        } else {
+            val_uint32 = *((uint32_t*) (((void*)pmo->pmnative)
+                                        + pl_offsets[node->field_id]));
+        }
+        switch(node->op) {
+        case T_LESSEQUAL:
+            if(val_uint32 <= node->right.ivalue)
+                result = 1;
+            break;
+        case T_LESS:
+            if(val_uint32 < node->right.ivalue)
+                result = 1;
+            break;
+        case T_GREATEREQUAL:
+            if(val_uint32 >= node->right.ivalue)
+                result = 1;
+            break;
+        case T_GREATER:
+            if(val_uint32 > node->right.ivalue)
+                result = 1;
+            break;
+        case T_EQUAL:
+            if(val_uint32 == node->right.ivalue)
+                result = 1;
+            break;
+        default:
+            DPRINTF(E_FATAL,L_PARSE,"Bad int op\n");
+            break;
+        }
+    } else if(node->op_type == SP_OPTYPE_INT64) {
+        if(pmo->kind == OBJECT_TYPE_STRING) {
+            val_uint64 = strtoull(((char*)pmo->pmstring) + node->field_id,NULL,10);
+        } else {
+            val_uint64 = *((uint64_t*) (((void*)pmo->pmnative)
+                                        + pl_offsets[node->field_id]));
+        }
+        switch(node->op) {
+        case T_LESSEQUAL:
+            if(val_uint64 <= node->right.ivalue64)
+                result = 1;
+            break;
+        case T_LESS:
+            if(val_uint64 < node->right.ivalue64)
+                result = 1;
+            break;
+        case T_GREATEREQUAL:
+            if(val_uint64 >= node->right.ivalue64)
+                result = 1;
+            break;
+        case T_GREATER:
+            if(val_uint64 > node->right.ivalue64)
+                result = 1;
+            break;
+        case T_EQUAL:
+            if(val_uint64 == node->right.ivalue64)
+                result = 1;
+            break;
+        default:
+            DPRINTF(E_FATAL,L_PARSE,"Bad int64 op\n");
+            break;
+        }
+    } else if(node->op_type == SP_OPTYPE_DATE) {
+        if(pmo->kind == OBJECT_TYPE_STRING) {
+            val_date = (time_t)strtoul(((char*)pmo->pmstring) + node->field_id,NULL,10);
+        } else {
+            val_date = *((uint32_t*) (((void*)pmo->pmnative)
+                                        + pl_offsets[node->field_id]));
+        }
+        switch(node->op) {
+        case T_LESSEQUAL:
+            if(val_date <= node->right.tvalue)
+                result = 1;
+            break;
+        case T_LESS:
+            if(val_date < node->right.tvalue)
+                result = 1;
+            break;
+        case T_GREATEREQUAL:
+            if(val_date >= node->right.tvalue)
+                result = 1;
+            break;
+        case T_GREATER:
+            if(val_date > node->right.tvalue)
+                result = 1;
+            break;
+        case T_EQUAL:
+            if(val_date == node->right.tvalue)
+                result = 1;
+            break;
+        default:
+            DPRINTF(E_FATAL,L_PARSE,"Bad date op\n");
+            break;
+        }
+    }
+
+    return result;
+}

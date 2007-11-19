@@ -90,12 +90,12 @@ static int out_daap_output_xml_write(WS_CONNINFO *pwsc, PRIVINFO *ppi, unsigned 
 
 static void out_daap_cleanup(PRIVINFO *ppi);
 
-void plugin_handler(WS_CONNINFO *pwsc);
-int plugin_can_handle(WS_CONNINFO *pwsc);
-int plugin_auth(WS_CONNINFO *pwsc, char *username, char *password);
+void out_daap_handler(WS_CONNINFO *pwsc);
+int out_daap_can_handle(WS_CONNINFO *pwsc);
+int out_daap_auth(WS_CONNINFO *pwsc, char *username, char *password);
 
 PLUGIN_INFO *plugin_info(void);
-PLUGIN_OUTPUT_FN _pofn = { plugin_can_handle, plugin_handler, plugin_auth };
+PLUGIN_OUTPUT_FN _pofn = { out_daap_can_handle, out_daap_handler, out_daap_auth };
 PLUGIN_REND_INFO _pri[] = {
     { "_daap._tcp", NULL },
     { NULL, NULL }
@@ -167,7 +167,7 @@ PLUGIN_INFO *plugin_info(void) {
 /**
  * see if the plugin should handle this request
  */
-int plugin_can_handle(WS_CONNINFO *pwsc) {
+int out_daap_can_handle(WS_CONNINFO *pwsc) {
     char *uri = pi_ws_uri(pwsc);
 
     pi_log(E_DBG,"Checking url %s\n",uri);
@@ -193,7 +193,7 @@ int plugin_can_handle(WS_CONNINFO *pwsc) {
  * check for auth.  Kind of a ham-handed implementation, but
  * works.
  */
-int plugin_auth(WS_CONNINFO *pwsc, char *username, char *password) {
+int out_daap_auth(WS_CONNINFO *pwsc, char *username, char *password) {
     char *uri = pi_ws_uri(pwsc);
 
     /* don't auth for stuff we shouldn't */
@@ -274,7 +274,7 @@ int daap_auth(WS_CONNINFO *pwsc, char *username, char *password) {
 /**
  * dispatch handler for web stuff
  */
-void plugin_handler(WS_CONNINFO *pwsc) {
+void out_daap_handler(WS_CONNINFO *pwsc) {
     char *string, *save, *token;
     PRIVINFO *ppi;
     int elements;
