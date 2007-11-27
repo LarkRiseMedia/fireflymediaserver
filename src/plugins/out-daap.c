@@ -879,7 +879,8 @@ void out_daap_addplaylist(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
     unsigned char *current=playlist_response;
     char *name, *query;
     int type;
-    int retval, playlistid;
+    int retval;
+    uint32_t playlistid;
     char *estring = NULL;
 
     if((!pi_ws_getvar(pwsc,"org.mt-daapd.playlist-type")) ||

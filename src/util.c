@@ -661,6 +661,36 @@ char *util_asprintf(char *fmt, ...) {
 }
 
 /**
+ * append a formatted string to an allocated string.  This is somewhat
+ * more heap thrashing that I probably want, but so it goes.  Better
+ * that than fixed-size stack, I guess.
+ *
+ * Anyone with a better implementation?
+ */
+char *util_aasprintf(char *string, char *fmt, ...) {
+    char *outbuf, *outbuf2;
+    va_list ap;
+
+    ASSERT(fmt);
+    if(!fmt)
+        return string;
+
+    /* could probably do this cheaper, but not sure if all implementations
+     * allow fmt != first arg - (sizeof(char*)) */
+
+    va_start(ap,fmt);
+    outbuf = util_vasprintf(fmt,ap);
+    va_end(ap);
+
+    outbuf2 = util_asprintf("%s%s",string, outbuf);
+    free(string);
+    free(outbuf);
+
+    return outbuf2;
+}
+
+
+/**
  * Write a formatted string to an allocated string.  This deals with
  * versions of vsnprintf that return either the C99 way, or the pre-C99
  * way, by increasing the buffer until it works.
@@ -715,6 +745,27 @@ char *util_vasprintf(char *fmt, va_list ap) {
 
     return outbuf;
 }
+
+
+/**
+ * get an integer representation of a thread id
+ */
+uint32_t util_get_threadid(void) {
+    pthread_t tid;
+    int thread_id=0;
+
+    memset((void*)&tid,0,sizeof(pthread_t));
+    tid = pthread_self();
+
+    if(sizeof(pthread_t) == sizeof(int)) {
+        memcpy((void*)&thread_id,(void*)&tid,sizeof(thread_id));
+    } else {
+        thread_id = util_djb_hash_block((unsigned char *)&tid,sizeof(pthread_t));
+    }
+
+    return thread_id;
+}
+
 
 
 #ifdef DEBUG_MEM

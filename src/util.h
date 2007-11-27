@@ -23,8 +23,8 @@ typedef enum {
     l_plugin,
     l_memdebug,
     l_upnp,
-    l_last,
-    l_pl
+    l_pl,
+    l_last
 } ff_lock_t;
 
 /* debugging lock wrappers */
@@ -53,6 +53,9 @@ extern int util_utf16_byte_len(unsigned char *utf16);
 extern void util_hexdump(unsigned char *block, int len);
 extern char *util_vasprintf(char *fmt, va_list ap);
 extern char *util_asprintf(char *fmt, ...);
+extern char *util_aasprintf(char *string, char *fmt, ...);
+
+extern uint32_t util_get_threadid(void);
 
 #endif /* _UTIL_H_ */
 

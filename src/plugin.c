@@ -53,7 +53,7 @@
 #include "daapd.h"
 #include "conf.h"
 #include "configfile.h"
-#include "db-generic.h"
+#include "db.h"
 #include "err.h"
 #include "io.h"
 #include "os.h"

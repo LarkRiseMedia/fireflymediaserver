@@ -71,46 +71,6 @@ typedef struct tag_sp_node {
 #define SP_HINT_INT       2
 #define SP_HINT_DATE      3
 
-/*
-#define T_ID            0x00
-#define T_PATH          0x01
-#define T_TITLE         0x02
-#define T_ARTIST        0x03
-#define T_ALBUM         0x04
-#define T_GENRE         0x05
-#define T_COMMENT       0x06
-#define T_TYPE          0x07
-#define T_COMPOSER      0x08
-#define T_ORCHESTRA     0x09
-#define T_GROUPING      0x0a
-#define T_URL           0x0b
-#define T_BITRATE       0x0c
-#define T_SAMPLERATE    0x0d
-#define T_SONG_LENGTH   0x0e
-#define T_FILE_SIZE     0x0f
-#define T_YEAR          0x10
-#define T_TRACK         0x11
-#define T_TOTAL_TRACKS  0x12
-#define T_DISC          0x13
-#define T_TOTAL_DISCS   0x14
-#define T_BPM           0x15
-#define T_COMPILATION   0x16
-#define T_RATING        0x17
-#define T_PLAYCOUNT     0x18
-#define T_DATA_KIND     0x19
-#define T_ITEM_KIND     0x1a
-#define T_DESCRIPTION   0x1b
-#define T_TIME_ADDED    0x1c
-#define T_TIME_MODIFIED 0x0d
-#define T_TIME_PLAYED   0x1d
-#define T_TIME_STAMP    0x1e
-#define T_DISABLED      0x1f
-#define T_SAMPLE_COUNT  0x1e
-#define T_FORCE_UPDATE  0x1f
-#define T_CODECTYPE     0x20
-#define T_IDX           0x21
-*/
-
 /**
  * high 4 bits:
  *
@@ -275,7 +235,6 @@ FIELDLOOKUP sp_fields_0[] = {
     { T_DATE_FIELD, "time_added", NULL },
     { T_DATE_FIELD, "time_modified", NULL },
     { T_DATE_FIELD, "time_played", NULL },
-    { T_DATE_FIELD, "db_timestamp", NULL },
     { T_INT_FIELD, "sample_count", NULL }, // FIXME: int64
     { T_INT_FIELD, "force_update", NULL },
     { T_STRING_FIELD, "codectype", NULL },
@@ -379,16 +338,14 @@ int pl_offsets[] = {
     OFFSET_OF(MEDIA_NATIVE,time_added),    // 30
     OFFSET_OF(MEDIA_NATIVE,time_modified),
     OFFSET_OF(MEDIA_NATIVE,time_played),
-    OFFSET_OF(MEDIA_NATIVE,db_timestamp),
     OFFSET_OF(MEDIA_NATIVE,disabled),
-    OFFSET_OF(MEDIA_NATIVE,sample_count),  // 35
-    OFFSET_OF(MEDIA_NATIVE,force_update),
-    OFFSET_OF(MEDIA_NATIVE,codectype),
+    OFFSET_OF(MEDIA_NATIVE,sample_count),
+    OFFSET_OF(MEDIA_NATIVE,codectype),     // 35
     OFFSET_OF(MEDIA_NATIVE,index),
     OFFSET_OF(MEDIA_NATIVE,has_video),
-    OFFSET_OF(MEDIA_NATIVE,contentrating), // 40
+    OFFSET_OF(MEDIA_NATIVE,contentrating),
     OFFSET_OF(MEDIA_NATIVE,bits_per_sample),
-    OFFSET_OF(MEDIA_NATIVE,album_artist)
+    OFFSET_OF(MEDIA_NATIVE,album_artist)   // 40
 };
 
 typedef struct tag_parsetree {
@@ -451,7 +408,6 @@ static SP_NODE *sp_parse_date_criterion(PARSETREE tree);
 static time_t sp_parse_date(PARSETREE tree);
 static time_t sp_parse_date_interval(PARSETREE tree);
 static void sp_free_node(SP_NODE *node);
-static int sp_node_size(SP_NODE *node);
 static void sp_set_error(PARSETREE tree,int error);
 static int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo);
 
@@ -1399,7 +1355,7 @@ int sp_dispose(PARSETREE tree) {
     return 1;
 }
 
-#ifdef HAVE_SQL
+#if 0 //ifdef HAVE_SQL
 /**
  * calculate the size required to render the tree as a
  * sql query.

@@ -11,7 +11,7 @@
 #include "conf.h"
 #include "configfile.h"
 #include "daapd.h"
-#include "db-generic.h"
+#include "db.h"
 #include "err.h"
 #include "ff-dbstruct.h"
 #include "ff-plugins.h"
@@ -193,79 +193,13 @@ EXPORT int pi_should_transcode(WS_CONNINFO *pwsc, char *codec) {
 }
 
 
-EXPORT int pi_db_enum_start(char **pe, DB_QUERY *pinfo) {
-    DBQUERYINFO *pqi;
-    int result;
-
-    pqi = (DBQUERYINFO*)malloc(sizeof(DBQUERYINFO));
-    if(!pqi) {
-        if(pe) *pe = strdup("Malloc error");
-        return DB_E_MALLOC;
-    }
-    memset(pqi,0,sizeof(DBQUERYINFO));
-    pinfo->priv = (void*)pqi;
-
-    if(pinfo->filter) {
-        pqi->pt = sp_init();
-        if(!sp_parse(pqi->pt,pinfo->filter,pinfo->filter_type)) {
-            DPRINTF(E_LOG,L_PLUG,"Ignoring bad query (%s): %s\n",
-                    pinfo->filter,sp_get_error(pqi->pt));
-            sp_dispose(pqi->pt);
-            pqi->pt = NULL;
-        }
-    }
-
-    if((pinfo->limit) || (pinfo->offset)) {
-        pqi->index_low = pinfo->offset;
-        pqi->index_high = pinfo->offset + pinfo->limit - 1;
-        if(pqi->index_high < pqi->index_low)
-            pqi->index_high = 9999999;
-
-        pqi->index_type = indexTypeSub;
-    } else {
-        pqi->index_type = indexTypeNone;
-    }
-
-    pqi->want_count = 1;
-
-    switch(pinfo->query_type) {
-    case QUERY_TYPE_PLAYLISTS:
-        pqi->query_type = queryTypePlaylists;
-        break;
-    case QUERY_TYPE_DISTINCT:
-        if((strcmp(pinfo->distinct_field,"artist") == 0)) {
-            pqi->query_type = queryTypeBrowseArtists;
-        } else if((strcmp(pinfo->distinct_field,"genre") == 0)) {
-            pqi->query_type = queryTypeBrowseGenres;
-        } else if((strcmp(pinfo->distinct_field,"album") == 0)) {
-            pqi->query_type = queryTypeBrowseAlbums;
-        } else if((strcmp(pinfo->distinct_field,"composer") == 0)) {
-            pqi->query_type = queryTypeBrowseComposers;
-        } else {
-            if(pe) *pe = strdup("Unsupported browse type");
-            if(pqi->pt)
-                sp_dispose(pqi->pt);
-            pqi->pt = NULL;
-            return -1; /* not really a db error for this */
-        }
-        break;
-    case QUERY_TYPE_ITEMS:
-    default:
-        pqi->query_type = queryTypePlaylistItems;
-        pqi->correct_order = conf_get_int("scan","correct_order",1);
-        break;
-    }
-
-    pqi->playlist_id = pinfo->playlist_id;
-    result =  db_enum_start(pe, pqi);
-    pinfo->totalcount = pqi->specifiedtotalcount;
-
-    return DB_E_SUCCESS;
+EXPORT int pi_db_enum_start(char **pe, DB_QUERY *pquery) {
+    return db_enum_start(pe, pquery);
 }
 
-EXPORT int pi_db_enum_fetch_row(char **pe, char ***row, DB_QUERY *pinfo) {
-    return db_enum_fetch_row(pe, (PACKED_MP3FILE*)row,
-                             (DBQUERYINFO*)pinfo->priv);
+/* FIXME: return native media object */
+EXPORT int pi_db_enum_fetch_row(char **pe, char ***row, DB_QUERY *pquery) {
+    return db_enum_fetch_row(pe, (MEDIA_STRING **)row,pquery);
 }
 
 EXPORT int pi_db_enum_end(char **pe) {
@@ -273,27 +207,12 @@ EXPORT int pi_db_enum_end(char **pe) {
 }
 
 EXPORT int pi_db_enum_restart(char **pe, DB_QUERY *pinfo) {
-    DBQUERYINFO *pqi;
-
-    pqi = (DBQUERYINFO*)pinfo->priv;
-    return db_enum_reset(pe,pqi);
+    return db_enum_reset(pe,pinfo);
 }
 
-EXPORT void pi_db_enum_dispose(char **pe, DB_QUERY *pinfo) {
-    DBQUERYINFO *pqi;
-
-    if(!pinfo)
-        return;
-
-    if(pinfo->priv) {
-        pqi = (DBQUERYINFO *)pinfo->priv;
-        if(pqi->pt) {
-            sp_dispose(pqi->pt);
-            pqi->pt = NULL;
-        }
-        free(pqi);
-        pinfo->priv = NULL;
-    }
+/* FIXME: stubbed out -- could be done with the _end */
+EXPORT void pi_db_enum_dispose(char **pe, DB_QUERY *pquery) {
+    return;
 }
 
 EXPORT void pi_stream(WS_CONNINFO *pwsc, char *id) {
@@ -432,23 +351,23 @@ EXPORT void pi_stream(WS_CONNINFO *pwsc, char *id) {
 }
 
 EXPORT  int pi_db_add_playlist(char **pe, char *name, int type, char *clause,
-                               char *path, int index, int *playlistid) {
+                               char *path, int index, uint32_t *playlistid) {
     return db_add_playlist(pe, name, type, clause, path, index, playlistid);
 }
 
-EXPORT int pi_db_add_playlist_item(char **pe, int playlistid, int songid) {
+EXPORT int pi_db_add_playlist_item(char **pe, uint32_t playlistid, uint32_t songid) {
     return db_add_playlist_item(pe, playlistid, songid);
 }
 
-EXPORT int pi_db_edit_playlist(char **pe, int id, char *name, char *clause) {
+EXPORT int pi_db_edit_playlist(char **pe, uint32_t id, char *name, char *clause) {
     return db_edit_playlist(pe, id, name, clause);
 }
 
-EXPORT int pi_db_delete_playlist(char **pe, int playlistid) {
+EXPORT int pi_db_delete_playlist(char **pe, uint32_t playlistid) {
     return db_delete_playlist(pe, playlistid);
 }
 
-EXPORT int pi_db_delete_playlist_item(char **pe, int playlistid, int songid) {
+EXPORT int pi_db_delete_playlist_item(char **pe, uint32_t playlistid, uint32_t songid) {
     return db_delete_playlist_item(pe, playlistid, songid);
 }
 

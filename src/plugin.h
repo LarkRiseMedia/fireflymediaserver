@@ -24,7 +24,7 @@
 
 #include "webserver.h"
 #include "xml-rpc.h"
-#include "db-generic.h"
+#include "db.h"
 #include "ff-plugin-events.h"
 
 extern int plugin_init(void);

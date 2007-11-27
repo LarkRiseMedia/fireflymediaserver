@@ -51,9 +51,9 @@
 #include "daapd.h"
 #include "conf.h"
 #include "err.h"
-#include "db-generic.h"
-#include "db-sql.h"
+#include "db.h"
 #include "db-sql-sqlite3.h"
+#include "util.h"
 
 #ifndef TRUE
 #  define TRUE 1
@@ -65,9 +65,6 @@
 static pthread_mutex_t db_sqlite3_mutex = PTHREAD_MUTEX_INITIALIZER; /**< sqlite not reentrant */
 static sqlite3_stmt *db_sqlite3_stmt;
 static const char *db_sqlite3_ptail;
-static int db_sqlite3_finalized;
-static int db_sqlite3_reload=0;
-static char *db_sqlite3_enum_query=NULL;
 static char **db_sqlite3_row = NULL;
 static pthread_key_t db_sqlite3_key;
 static char db_sqlite3_path[PATH_MAX + 1];
@@ -76,13 +73,17 @@ static char db_sqlite3_path[PATH_MAX + 1];
 
 
 /* Forwards */
-void db_sqlite3_lock(void);
-void db_sqlite3_unlock(void);
-extern char *db_sqlite3_initial1;
-extern char *db_sqlite3_initial2;
-int db_sqlite3_enum_begin_helper(char **pe);
+static void db_sqlite3_lock(void);
+static void db_sqlite3_unlock(void);
+extern char *db_sqlite3_initial;
+static int db_sqlite3_enum_begin_helper(char **pe);
+static int db_sqlite3_exec(char **pe, int loglevel, char *fmt, ...);
 
 
+
+int db_sqlite3_add(char **pe, MEDIA_NATIVE *pmo) {
+    return DB_E_SUCCESS;
+}
 
 /**
  * get (or create) the db handle
@@ -95,7 +96,7 @@ sqlite3 *db_sqlite3_handle(void) {
     if(pdb == NULL) { /* don't have a handle yet */
         DPRINTF(E_DBG,L_DB,"Creating new db handle\n");
         if(sqlite3_open(db_sqlite3_path,&pdb) != SQLITE_OK) {
-            db_get_error(&pe,DB_E_SQL_ERROR,sqlite3_errmsg(pdb));
+            db_sqlite2_set_error(&pe,DB_E_SQL_ERROR,sqlite3_errmsg(pdb));
             DPRINTF(E_FATAL,L_DB,"db_sqlite3_open: %s (%s)\n",pe,db_sqlite3_path);
             db_sqlite3_unlock();
             return NULL;
@@ -105,6 +106,27 @@ sqlite3 *db_sqlite3_handle(void) {
     }
 
     return pdb;
+}
+
+/**
+ * Build an error string
+ *
+ * @param pe error buffer
+ * @param error error number
+ */
+void db_sqlite3_set_error(char **pe, int error, ...) {
+    va_list ap;
+    char *errorptr;
+
+    if(!pe)
+        return;
+
+    va_start(ap, error);
+    errorptr = util_vasprintf(db_error_list[error], ap);
+    va_end(ap);
+
+    DPRINTF(E_SPAM,L_MISC,"Raising error: %s\n",errorptr);
+    *pe = errorptr;
 }
 
 /**
@@ -150,6 +172,14 @@ void db_sqlite3_vmfree(char *query) {
     sqlite3_free(query);
 }
 
+/**
+ * returns the db version of the current database
+ *
+ * @returns db version
+ */
+int db_sqlite3_db_version(void) {
+    return 0;
+}
 
 /**
  * open a sqlite3 database
@@ -160,8 +190,6 @@ void db_sqlite3_vmfree(char *query) {
  * @returns DB_E_SUCCESS on success
  */
 int db_sqlite3_open(char **pe, char *dsn) {
-    int ver;
-    int err;
     sqlite3 *pdb;
 
     pthread_key_create(&db_sqlite3_key, (void*)db_sqlite3_freedb);
@@ -169,7 +197,7 @@ int db_sqlite3_open(char **pe, char *dsn) {
 
     db_sqlite3_lock();
     if(sqlite3_open(db_sqlite3_path,&pdb) != SQLITE_OK) {
-        db_get_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(pdb));
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(pdb));
         DPRINTF(E_LOG,L_DB,"db_sqlite3_open: %s (%s)\n",pe ? *pe : "Unknown",
             db_sqlite3_path);
         db_sqlite3_unlock();
@@ -178,20 +206,9 @@ int db_sqlite3_open(char **pe, char *dsn) {
     sqlite3_close(pdb);
     db_sqlite3_unlock();
 
-    err = db_sql_fetch_int(pe,&ver,"select value from config where "
-                           "term='version'");
-    if(err != DB_E_SUCCESS) {
-        if(pe) { free(*pe); }
-        /* we'll catch this on the init */
-        DPRINTF(E_LOG,L_DB,"Can't get db version. New database?\n");
-    } else if(ver <  DB_SQLITE3_VERSION) {
-        DPRINTF(E_LOG,L_DB,"Old database version: %d, expecting %d\n",
-                ver,DB_SQLITE3_VERSION);
-        db_get_error(pe,DB_E_WRONGVERSION);
-        return DB_E_WRONGVERSION;
-    } else if(ver > DB_SQLITE3_VERSION) {
-        db_sqlite3_exec(pe,E_FATAL,"insert into config (term, value) "
-                        "values ('rescan',1)");
+    if(db_sqlite3_db_version() != DB_SQLITE3_VERSION) {
+        db_sqlite3_exec(NULL,E_DBG,"drop table songs");
+        db_sqlite3_exec(NULL,E_FATAL,db_sqlite3_initial);
     }
 
     return DB_E_SUCCESS;
@@ -231,7 +248,7 @@ int db_sqlite3_exec(char **pe, int loglevel, char *fmt, ...) {
 
     err=sqlite3_exec(db_sqlite3_handle(),query,NULL,NULL,&perr);
     if(err != SQLITE_OK) {
-        db_get_error(pe,DB_E_SQL_ERROR,perr);
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
 
         DPRINTF(loglevel == E_FATAL ? E_LOG : loglevel,L_DB,"Query: %s\n",
                 query);
@@ -252,32 +269,20 @@ int db_sqlite3_exec(char **pe, int loglevel, char *fmt, ...) {
 /**
  * start enumerating rows in a select
  */
-int db_sqlite3_enum_begin(char **pe, char *fmt, ...) {
-    va_list ap;
-
+int db_sqlite3_enum_begin(char **pe) {
     db_sqlite3_lock();
-    va_start(ap, fmt);
-    db_sqlite3_enum_query = sqlite3_vmprintf(fmt,ap);
-    va_end(ap);
-
-    db_sqlite3_finalized=0;
     return db_sqlite3_enum_begin_helper(pe);
 }
 
 int db_sqlite3_enum_begin_helper(char **pe) {
     int err;
 
-    if(!db_sqlite3_enum_query)
-        *((int*)NULL) = 1;
-
-    DPRINTF(E_DBG,L_DB,"Executing: %s\n",db_sqlite3_enum_query);
-    err=sqlite3_prepare(db_sqlite3_handle(),db_sqlite3_enum_query,-1,
+    DPRINTF(E_DBG,L_DB,"Executing: select * from songs\n");
+    err=sqlite3_prepare(db_sqlite3_handle(),"select * from songs",-1,
                         &db_sqlite3_stmt,&db_sqlite3_ptail);
 
     if(err != SQLITE_OK) {
-        db_get_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(db_sqlite3_handle()));
-        sqlite3_free(db_sqlite3_enum_query);
-        db_sqlite3_enum_query=NULL;
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(db_sqlite3_handle()));
         db_sqlite3_unlock();
         return DB_E_SQL_ERROR;
     }
@@ -305,14 +310,12 @@ int db_sqlite3_enum_begin_helper(char **pe) {
  *          DB_E_SUCCESS with a valid row when more data,
  *          DB_E_* on error
  */
-int db_sqlite3_enum_fetch(char **pe, SQL_ROW *pr) {
+int db_sqlite3_enum_fetch(char **pe, MEDIA_STRING **ppmo) {
     int err;
     int cols;
     int idx;
     int counter=10;
-
-    if(!db_sqlite3_enum_query)
-        *((int*)NULL) = 1;
+    char ***pr = (char ***)ppmo;
 
     while(counter--) {
         DPRINTF(E_SPAM,L_DB,"Fetching statement: %08X\n",db_sqlite3_stmt);
@@ -353,10 +356,8 @@ int db_sqlite3_enum_fetch(char **pe, SQL_ROW *pr) {
         free(db_sqlite3_row);
     db_sqlite3_row = NULL;
 
-    db_get_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(db_sqlite3_handle()));
-    DPRINTF(E_SPAM,L_DB,"Finalizing statement: %08X\n",db_sqlite3_stmt);
+    db_sqlite2_set_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(db_sqlite3_handle()));
     sqlite3_finalize(db_sqlite3_stmt);
-    db_sqlite3_finalized=1;
 
     return DB_E_SQL_ERROR;
 }
@@ -367,23 +368,15 @@ int db_sqlite3_enum_fetch(char **pe, SQL_ROW *pr) {
 int db_sqlite3_enum_end(char **pe) {
     int err;
 
-    if(!db_sqlite3_enum_query)
-        *((int*)NULL) = 1;
-
     if(db_sqlite3_row)
         free(db_sqlite3_row);
     db_sqlite3_row = NULL;
-    sqlite3_free(db_sqlite3_enum_query);
-    db_sqlite3_enum_query = NULL;
 
-    if(!db_sqlite3_finalized) {
-        DPRINTF(E_SPAM,L_DB,"Finalizing statement: %08X\n",db_sqlite3_stmt);
-        err = sqlite3_finalize(db_sqlite3_stmt);
-        if(err != SQLITE_OK) {
-            db_get_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(db_sqlite3_handle()));
-            db_sqlite3_unlock();
-            return DB_E_SQL_ERROR;
-        }
+    err = sqlite3_finalize(db_sqlite3_stmt);
+    if(err != SQLITE_OK) {
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,sqlite3_errmsg(db_sqlite3_handle()));
+        db_sqlite3_unlock();
+        return DB_E_SQL_ERROR;
     }
 
     db_sqlite3_unlock();
@@ -395,99 +388,6 @@ int db_sqlite3_enum_end(char **pe) {
  */
 int db_sqlite3_enum_restart(char **pe) {
     return db_sqlite3_enum_begin_helper(pe);
-}
-
-
-int db_sqlite3_event(int event_type) {
-    switch(event_type) {
-
-    case DB_SQL_EVENT_STARTUP: /* this is a startup with existing songs */
-        if(!conf_get_int("database","quick_startup",0))
-            db_sqlite3_exec(NULL,E_FATAL,"vacuum");
-
-        db_sqlite3_exec(NULL,E_DBG,"create index idx_path on "
-                        "songs(path,idx)");
-        db_sqlite3_exec(NULL,E_DBG,"create index idx_songid on "
-                        "playlistitems(songid)");
-        db_sqlite3_exec(NULL,E_DBG,"create index idx_playlistid on "
-                        "playlistitems(playlistid,songid)");
-        db_sqlite3_reload=0;
-        break;
-
-    case DB_SQL_EVENT_FULLRELOAD: /* either a fresh load or force load */
-        db_sqlite3_exec(NULL,E_DBG,"drop index idx_path");
-        db_sqlite3_exec(NULL,E_DBG,"drop index idx_songid");
-        db_sqlite3_exec(NULL,E_DBG,"drop index idx_playlistid");
-
-        db_sqlite3_exec(NULL,E_DBG,"drop table songs");
-//        db_sqlite3_exec(NULL,E_DBG,"drop table playlists");
-        db_sqlite3_exec(NULL,E_DBG,"delete from playlists where not type=1 and not type=0");
-        db_sqlite3_exec(NULL,E_DBG,"drop table playlistitems");
-        db_sqlite3_exec(NULL,E_DBG,"drop table config");
-
-        db_sqlite3_exec(NULL,E_DBG,"vacuum");
-
-        db_sqlite3_exec(NULL,E_DBG,db_sqlite3_initial1);
-        db_sqlite3_exec(NULL,E_DBG,db_sqlite3_initial2);
-        db_sqlite3_reload=1;
-        break;
-
-    case DB_SQL_EVENT_SONGSCANSTART:
-        if(db_sqlite3_reload) {
-            db_sqlite3_exec(NULL,E_FATAL,"pragma synchronous = off");
-            db_sqlite3_exec(NULL,E_FATAL,"begin transaction");
-        } else {
-            db_sqlite3_exec(NULL,E_DBG,"drop table updated");
-            db_sqlite3_exec(NULL,E_FATAL,"create temp table updated (id int)");
-            db_sqlite3_exec(NULL,E_DBG,"drop table plupdated");
-            db_sqlite3_exec(NULL,E_FATAL,"create temp table plupdated(id int)");
-        }
-        break;
-
-    case DB_SQL_EVENT_SONGSCANEND:
-        if(db_sqlite3_reload) {
-            db_sqlite3_exec(NULL,E_FATAL,"commit transaction");
-            db_sqlite3_exec(NULL,E_FATAL,"pragma synchronous = normal");
-            db_sqlite3_exec(NULL,E_FATAL,"create index idx_path on songs(path,idx)");
-            db_sqlite3_exec(NULL,E_DBG,"delete from config where term='rescan'");
-        }
-        break;
-
-    case DB_SQL_EVENT_PLSCANSTART:
-        db_sqlite3_exec(NULL,E_FATAL,"pragma synchronous = off");
-        db_sqlite3_exec(NULL,E_FATAL,"begin transaction");
-        break;
-
-    case DB_SQL_EVENT_PLSCANEND:
-        db_sqlite3_exec(NULL,E_FATAL,"end transaction");
-        db_sqlite3_exec(NULL,E_FATAL,"pragma synchronous=normal");
-
-        if(db_sqlite3_reload) {
-            db_sqlite3_exec(NULL,E_FATAL,"create index idx_songid on playlistitems(songid)");
-            db_sqlite3_exec(NULL,E_FATAL,"create index idx_playlistid on playlistitems(playlistid,songid)");
-
-        } else {
-            db_sqlite3_exec(NULL,E_FATAL,"delete from songs where id not in (select id from updated)");
-            db_sqlite3_exec(NULL,E_FATAL,"update songs set force_update=0");
-            db_sqlite3_exec(NULL,E_FATAL,"drop table updated");
-
-            db_sqlite3_exec(NULL,E_FATAL,"delete from playlists where "
-                                         "((type=%d) OR (type=%d)) and "
-                                         "id not in (select id from plupdated)",
-                                         PL_STATICFILE,PL_STATICXML);
-            db_sqlite3_exec(NULL,E_FATAL,"delete from playlistitems where "
-                                         "playlistid not in (select distinct "
-                                         "id from playlists)");
-            db_sqlite3_exec(NULL,E_FATAL,"drop table plupdated");
-        }
-        db_sqlite3_reload=0;
-        break;
-
-    default:
-        break;
-    }
-
-    return DB_E_SUCCESS;
 }
 
 /**
@@ -508,7 +408,7 @@ int db_sqlite3_insert_id(void) {
 
 
 
-char *db_sqlite3_initial1 =
+char *db_sqlite3_initial =
 "create table songs (\n"
 "   id              INTEGER PRIMARY KEY NOT NULL,\n"
 "   path            VARCHAR(4096) NOT NULL,\n"
@@ -553,30 +453,4 @@ char *db_sqlite3_initial1 =
 "   contentrating   INTEGER DEFAULT 0,\n"
 "   bits_per_sample INTEGER DEFAULT 0,\n"
 "   album_artist    VARCHAR(1024)\n"
-");\n"
-"create table playlistitems (\n"
-"   id             INTEGER PRIMARY KEY NOT NULL,\n"
-"   playlistid     INTEGER NOT NULL,\n"
-"   songid         INTEGER NOT NULL\n"
-");\n"
-"create table config (\n"
-"   term            VARCHAR(255)    NOT NULL,\n"
-"   subterm         VARCHAR(255)    DEFAULT NULL,\n"
-"   value           VARCHAR(1024)   NOT NULL\n"
-");\n"
-"insert into config values ('version','','13');\n";
-
-char *db_sqlite3_initial2 =
-"create table playlists (\n"
-"   id             INTEGER PRIMARY KEY NOT NULL,\n"
-"   title          VARCHAR(255) NOT NULL,\n"
-"   type           INTEGER NOT NULL,\n"
-"   items          INTEGER NOT NULL,\n"
-"   query          VARCHAR(1024),\n"
-"   db_timestamp   INTEGER NOT NULL,\n"
-"   path           VARCHAR(4096),\n"
-"   idx            INTEGER NOT NULL\n"
-");\n"
-"insert into playlists values (1,'Library',1,0,'1',0,'',0);\n";
-
-
+");\n";

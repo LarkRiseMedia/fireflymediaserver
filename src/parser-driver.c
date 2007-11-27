@@ -10,7 +10,7 @@
 
 #include "daapd.h"
 #include "conf.h"
-#include "db-generic.h"
+#include "db.h"
 #include "err.h"
 #include "smart-parser.h"
 

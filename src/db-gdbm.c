@@ -38,7 +38,7 @@
 #include "err.h"
 #include "mp3-scanner.h"
 #include "redblack.h"
-#include "db-generic.h"
+#include "db.h"
 #include "db-gdbm.h"
 
 #ifndef GDBM_SYNC

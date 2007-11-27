@@ -51,9 +51,10 @@
 #include "daapd.h"
 #include "conf.h"
 #include "err.h"
-#include "db-generic.h"
-#include "db-sql.h"
+#include "ff-dbstruct.h"
+#include "db.h"
 #include "db-sql-sqlite2.h"
+#include "util.h"
 
 #ifndef TRUE
 #  define TRUE 1
@@ -64,8 +65,6 @@
 /* Globals */
 static pthread_mutex_t db_sqlite2_mutex = PTHREAD_MUTEX_INITIALIZER; /**< sqlite not reentrant */
 static sqlite_vm *db_sqlite2_pvm;
-static int db_sqlite2_reload=0;
-static char *db_sqlite2_enum_query;
 static pthread_key_t db_sqlite2_key;
 
 static char db_sqlite2_path[PATH_MAX + 1];
@@ -74,11 +73,120 @@ static char db_sqlite2_path[PATH_MAX + 1];
 
 
 /* Forwards */
-void db_sqlite2_lock(void);
-void db_sqlite2_unlock(void);
-extern char *db_sqlite2_initial1;
-extern char *db_sqlite2_initial2;
-int db_sqlite2_enum_begin_helper(char **pe);
+static void db_sqlite2_lock(void);
+static void db_sqlite2_unlock(void);
+extern char *db_sqlite2_initial;
+static int db_sqlite2_enum_begin_helper(char **pe);
+static int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...);
+static int db_sqlite2_insert_id(void);
+
+/**
+ * insert a media object into the database
+ *
+ * @param pe error buffer
+ * @param pmo object to add
+ * @returns DB_E_SUCCESS on success.  pmo->id gets updated on add/update
+ */
+int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
+    char *sql;
+    char *term;
+    int field,pass;
+    int offset;
+
+    if(pmo->id) {
+        /* update query */
+        sql = util_asprintf("update songs set ");
+        for(field = 1; field < SG_LAST; field++) { /* skip id */
+            offset = ff_field_data[field].offset;
+
+            switch(ff_field_data[field].type) {
+            case FT_INT32:
+                sql = util_aasprintf(sql,"%s = %d%c ",ff_field_data[field].name,
+                                     *((uint32_t*)(((void*)pmo)+offset)),
+                                     (field == (SG_LAST - 1)) ? ' ' : ',');
+                break;
+            case FT_INT64:
+                sql = util_aasprintf(sql,"%s = %ll%c ",ff_field_data[field].name,
+                                     *((uint64_t*)(((void*)pmo)+offset)),
+                                     (field == (SG_LAST - 1)) ? ' ' : ',');
+                break;
+            case FT_STRING:
+                term = sqlite_mprintf("%Q",*(char**)(((void*)pmo)+offset));
+                sql = util_aasprintf(sql,"%s = %s%c ",ff_field_data[field].name,
+                                     term, (field == (SG_LAST - 1)) ? ' ' : ',');
+                sqlite_freemem(term);
+                break;
+            default:
+                DPRINTF(E_FATAL,L_DB,"Unhandled data type in db_add for '%s'\n",
+                        ff_field_data[field].name);
+                break;
+            }
+        }
+        sql = util_aasprintf(sql,"where id=%d",pmo->id);
+    } else {
+        /* insert query */
+        sql = util_asprintf("insert into songs (");
+        for(pass = 0; pass < 2; pass++) {
+            for(field = 1; field < SG_LAST; field++) { /* skip id */
+                if(!pass) {
+                    sql = util_aasprintf(sql,"%s%c ",ff_field_data[field].name,
+                                         (field == (SG_LAST - 1)) ? ')' : ',');
+                } else {
+                    offset = ff_field_data[field].offset;
+                    switch(ff_field_data[field].type) {
+                    case FT_INT32:
+                        sql = util_aasprintf(sql,"%d%c ",
+                                             *((uint32_t*)(((void*)pmo)+offset)),
+                                             (field == (SG_LAST - 1)) ? ')' : ',');
+                        break;
+                    case FT_INT64:
+                        sql = util_aasprintf(sql,"%ll%c ",
+                                             *((uint64_t*)(((void*)pmo)+offset)),
+                                             (field == (SG_LAST - 1)) ? ')' : ',');
+                        break;
+                    case FT_STRING:
+                        term = sqlite_mprintf("%Q",*(char**)((((void*)pmo)+offset)));
+                        sql = util_aasprintf(sql,"%s%c ", term,
+                                             (field == (SG_LAST - 1)) ? ')' : ',');
+                        sqlite_freemem(term);
+                        break;
+                    default:
+                        DPRINTF(E_FATAL,L_DB,"Unhandled data type in db_add for '%s'\n",
+                                ff_field_data[field].name);
+                        break;
+                    }
+                }
+            }
+            if(!pass)
+                sql = util_aasprintf(sql," values (");
+        }
+    }
+
+    DPRINTF(E_DBG,L_DB,"Executing sql: %s\n",sql);
+
+    return DB_E_SUCCESS;
+}
+
+/**
+ * Build an error string
+ *
+ * @param pe error buffer
+ * @param error error number
+ */
+void db_sqlite2_set_error(char **pe, int error, ...) {
+    va_list ap;
+    char *errorptr;
+
+    if(!pe)
+        return;
+
+    va_start(ap, error);
+    errorptr = util_vasprintf(db_error_list[error], ap);
+    va_end(ap);
+
+    DPRINTF(E_SPAM,L_MISC,"Raising error: %s\n",errorptr);
+    *pe = errorptr;
+}
 
 /**
  * get (or create) the db handle
@@ -91,7 +199,7 @@ sqlite *db_sqlite2_handle(void) {
     pdb = (sqlite *)pthread_getspecific(db_sqlite2_key);
     if(pdb == NULL) { /* don't have a handle yet */
         if((pdb = sqlite_open(db_sqlite2_path,0666,&perr)) == NULL) {
-            db_get_error(&pe,DB_E_SQL_ERROR,perr);
+            db_sqlite2_set_error(&pe,DB_E_SQL_ERROR,perr);
             DPRINTF(E_FATAL,L_DB,"db_sqlite2_open: %s (%s)\n",perr,
                     db_sqlite2_path);
             sqlite_freemem(perr);
@@ -138,20 +246,15 @@ void db_sqlite2_unlock(void) {
     //    DPRINTF(E_SPAM,L_LOCK,"released db_sqlite2_lock\n");
 }
 
-/**
- *
- */
-char *db_sqlite2_vmquery(char *fmt,va_list ap) {
-    return sqlite_vmprintf(fmt,ap);
-}
 
 /**
+ * returns the db version of the current database
  *
+ * @returns db version
  */
-void db_sqlite2_vmfree(char *query) {
-    sqlite_freemem(query);
+int db_sqlite2_db_version(void) {
+    return 0;
 }
-
 
 /**
  * open a sqlite2 database
@@ -164,8 +267,6 @@ void db_sqlite2_vmfree(char *query) {
 int db_sqlite2_open(char **pe, char *dsn) {
     sqlite *pdb;
     char *perr;
-    int ver;
-    int err;
 
     pthread_key_create(&db_sqlite2_key, (void*)db_sqlite2_freedb);
     snprintf(db_sqlite2_path,sizeof(db_sqlite2_path),"%s/songs.db",dsn);
@@ -173,7 +274,7 @@ int db_sqlite2_open(char **pe, char *dsn) {
     db_sqlite2_lock();
     pdb=sqlite_open(db_sqlite2_path,0666,&perr);
     if(!pdb) {
-        db_get_error(pe,DB_E_SQL_ERROR,perr);
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
         DPRINTF(E_LOG,L_DB,"db_sqlite2_open: %s (%s)\n",perr,
             db_sqlite2_path);
         sqlite_freemem(perr);
@@ -183,23 +284,10 @@ int db_sqlite2_open(char **pe, char *dsn) {
     sqlite_close(pdb);
     db_sqlite2_unlock();
 
-    err = db_sql_fetch_int(pe,&ver,"select value from config where "
-                           "term='version'");
-    if(err != DB_E_SUCCESS) {
-        if(pe) { free(*pe); }
-        /* we'll catch this on the init */
-        DPRINTF(E_LOG,L_DB,"Can't get db version. New database?\n");
-    } else if(ver < DB_SQLITE2_VERSION) {
-        /* we'll deal with this in the db handler */
-        DPRINTF(E_LOG,L_DB,"Old database version: %d, expecting %d\n",
-                ver, DB_SQLITE2_VERSION);
-        db_get_error(pe,DB_E_WRONGVERSION);
-        return DB_E_WRONGVERSION;
-    } else if(ver > DB_SQLITE2_VERSION) { /* Back-grade from nightlies ? */
-        DPRINTF(E_LOG,L_DB,"Bad db version: %d, expecting %d\n",
-                ver, DB_SQLITE2_VERSION);
-        db_sqlite2_exec(pe,E_FATAL,"insert into config (term, value) "
-                        "values ('rescan',1)");
+    if(db_sqlite2_db_version() != DB_SQLITE2_VERSION) {
+        /* got to rescan */
+        db_sqlite2_exec(NULL,E_DBG,"drop table songs");
+        db_sqlite2_exec(NULL,E_FATAL,db_sqlite2_initial);
     }
 
     return DB_E_SUCCESS;
@@ -237,7 +325,7 @@ int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...) {
     db_sqlite2_lock();
     err=sqlite_exec(db_sqlite2_handle(),query,NULL,NULL,&perr);
     if(err != SQLITE_OK) {
-        db_get_error(pe,DB_E_SQL_ERROR,perr);
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
 
         DPRINTF(loglevel == E_FATAL ? E_LOG : loglevel,L_DB,"Query: %s\n",
                 query);
@@ -258,14 +346,8 @@ int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...) {
 /**
  * start enumerating rows in a select
  */
-int db_sqlite2_enum_begin(char **pe, char *fmt, ...) {
-    va_list ap;
-
-    va_start(ap, fmt);
+int db_sqlite2_enum_begin(char **pe) {
     db_sqlite2_lock();
-    db_sqlite2_enum_query = sqlite_vmprintf(fmt,ap);
-    va_end(ap);
-
     return db_sqlite2_enum_begin_helper(pe);
 }
 
@@ -274,16 +356,14 @@ int db_sqlite2_enum_begin_helper(char **pe) {
     char *perr;
     const char *ptail;
 
-    DPRINTF(E_DBG,L_DB,"Executing: %s\n",db_sqlite2_enum_query);
-
-    err=sqlite_compile(db_sqlite2_handle(),db_sqlite2_enum_query,
+    DPRINTF(E_DBG,L_DB,"Executing: select * from songs\n");
+    err=sqlite_compile(db_sqlite2_handle(),"select * from songs",
                        &ptail,&db_sqlite2_pvm,&perr);
 
     if(err != SQLITE_OK) {
-        db_get_error(pe,DB_E_SQL_ERROR,perr);
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
         sqlite_freemem(perr);
         db_sqlite2_unlock();
-        sqlite_freemem(db_sqlite2_enum_query);
         return DB_E_SQL_ERROR;
     }
 
@@ -302,12 +382,13 @@ int db_sqlite2_enum_begin_helper(char **pe) {
  *          DB_E_SUCCESS with a valid row when more data,
  *          DB_E_* on error
  */
-int db_sqlite2_enum_fetch(char **pe, SQL_ROW *pr) {
+int db_sqlite2_enum_fetch(char **pe, MEDIA_STRING **ppmo) {
     int err;
     char *perr=NULL;
     const char **colarray;
     int cols;
     int counter=10;
+    const char ***pr = (const char ***)ppmo;
 
     while(counter--) {
         err=sqlite_step(db_sqlite2_pvm,&cols,(const char ***)pr,&colarray);
@@ -325,7 +406,7 @@ int db_sqlite2_enum_fetch(char **pe, SQL_ROW *pr) {
         return DB_E_SUCCESS;
     }
 
-    db_get_error(pe,DB_E_SQL_ERROR,perr);
+    db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
     return DB_E_SQL_ERROR;
 }
 
@@ -336,11 +417,9 @@ int db_sqlite2_enum_end(char **pe) {
     int err;
     char *perr;
 
-    sqlite_freemem(db_sqlite2_enum_query);
-
     err = sqlite_finalize(db_sqlite2_pvm,&perr);
     if(err != SQLITE_OK) {
-        db_get_error(pe,DB_E_SQL_ERROR,perr);
+        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
         sqlite_freemem(perr);
         db_sqlite2_unlock();
         return DB_E_SQL_ERROR;
@@ -357,102 +436,6 @@ int db_sqlite2_enum_restart(char **pe) {
     return db_sqlite2_enum_begin_helper(pe);
 }
 
-
-int db_sqlite2_event(int event_type) {
-    switch(event_type) {
-
-    case DB_SQL_EVENT_STARTUP: /* this is a startup with existing songs */
-        if(!conf_get_int("database","quick_startup",0))
-            db_sqlite2_exec(NULL,E_FATAL,"vacuum");
-
-        /* make sure our indexes exist */
-        db_sqlite2_exec(NULL,E_DBG,"create index idx_path on "
-                        "songs(path,idx)");
-        db_sqlite2_exec(NULL,E_DBG,"create index idx_songid on "
-                        "playlistitems(songid)");
-        db_sqlite2_exec(NULL,E_DBG,"create index idx_playlistid on "
-                        "playlistitems(playlistid,songid)");
-
-        db_sqlite2_reload=0;
-        break;
-
-    case DB_SQL_EVENT_FULLRELOAD: /* either a fresh load or force load */
-        db_sqlite2_exec(NULL,E_DBG,"drop index idx_path");
-        db_sqlite2_exec(NULL,E_DBG,"drop index idx_songid");
-        db_sqlite2_exec(NULL,E_DBG,"drop index idx_playlistid");
-
-        db_sqlite2_exec(NULL,E_DBG,"drop table songs");
-        //        db_sqlite2_exec(NULL,E_DBG,"drop table playlists");
-        db_sqlite2_exec(NULL,E_DBG,"delete from playlists where not type=1 and not type=0");
-        db_sqlite2_exec(NULL,E_DBG,"drop table playlistitems");
-        db_sqlite2_exec(NULL,E_DBG,"drop table config");
-
-        db_sqlite2_exec(NULL,E_DBG,"vacuum");
-
-        db_sqlite2_exec(NULL,E_DBG,db_sqlite2_initial1);
-        db_sqlite2_exec(NULL,E_DBG,db_sqlite2_initial2);
-
-        db_sqlite2_reload=1;
-        break;
-
-    case DB_SQL_EVENT_SONGSCANSTART:
-        if(db_sqlite2_reload) {
-            db_sqlite2_exec(NULL,E_FATAL,"pragma synchronous = off");
-            db_sqlite2_exec(NULL,E_FATAL,"begin transaction");
-        } else {
-            db_sqlite2_exec(NULL,E_DBG,"drop table updated");
-            db_sqlite2_exec(NULL,E_FATAL,"create temp table updated (id int)");
-            db_sqlite2_exec(NULL,E_DBG,"drop table plupdated");
-            db_sqlite2_exec(NULL,E_FATAL,"create temp table plupdated(id int)");
-        }
-        break;
-
-    case DB_SQL_EVENT_SONGSCANEND:
-        if(db_sqlite2_reload) {
-            db_sqlite2_exec(NULL,E_FATAL,"commit transaction");
-            db_sqlite2_exec(NULL,E_FATAL,"pragma synchronous=normal");
-            db_sqlite2_exec(NULL,E_FATAL,"create index idx_path on songs(path,idx)");
-            db_sqlite2_exec(NULL,E_DBG,"delete from config where term='rescan'");
-        }
-        break;
-
-    case DB_SQL_EVENT_PLSCANSTART:
-        db_sqlite2_exec(NULL,E_FATAL,"pragma synchronous = off");
-        db_sqlite2_exec(NULL,E_FATAL,"begin transaction");
-        break;
-
-    case DB_SQL_EVENT_PLSCANEND:
-        db_sqlite2_exec(NULL,E_FATAL,"end transaction");
-        db_sqlite2_exec(NULL,E_FATAL,"pragma synchronous=normal");
-
-        if(db_sqlite2_reload) {
-            db_sqlite2_exec(NULL,E_FATAL,"create index idx_songid on playlistitems(songid)");
-            db_sqlite2_exec(NULL,E_FATAL,"create index idx_playlistid on playlistitems(playlistid,songid)");
-
-        } else {
-            db_sqlite2_exec(NULL,E_FATAL,"delete from songs where id not in (select id from updated)");
-            db_sqlite2_exec(NULL,E_FATAL,"update songs set force_update=0");
-            db_sqlite2_exec(NULL,E_FATAL,"drop table updated");
-
-            db_sqlite2_exec(NULL,E_FATAL,"delete from playlists where "
-                                         "((type=%d) OR (type=%d)) and "
-                                         "id not in (select id from plupdated)",
-                                         PL_STATICFILE,PL_STATICXML);
-            db_sqlite2_exec(NULL,E_FATAL,"delete from playlistitems where "
-                                         "playlistid not in (select distinct "
-                                         "id from playlists)");
-            db_sqlite2_exec(NULL,E_FATAL,"drop table plupdated");
-        }
-        db_sqlite2_reload=0;
-        break;
-
-    default:
-        break;
-    }
-
-    return DB_E_SUCCESS;
-}
-
 /**
  * get the id of the last auto_update inserted item
  *
@@ -463,8 +446,7 @@ int db_sqlite2_insert_id(void) {
     return sqlite_last_insert_rowid(db_sqlite2_handle());
 }
 
-
-char *db_sqlite2_initial1 =
+char *db_sqlite2_initial =
 "create table songs (\n"
 "   id              INTEGER PRIMARY KEY NOT NULL,\n"      /* 0 */
 "   path            VARCHAR(4096) NOT NULL,\n"
@@ -509,28 +491,5 @@ char *db_sqlite2_initial1 =
 "   contentrating   INTEGER DEFAULT 0,\n"                /* 40 */
 "   bits_per_sample INTEGER DEFAULT 0,\n"
 "   album_artist    VARCHAR(1024)\n"
-");\n"
-"create table playlistitems (\n"
-"   id             INTEGER PRIMARY KEY NOT NULL,\n"
-"   playlistid     INTEGER NOT NULL,\n"
-"   songid         INTEGER NOT NULL\n"
-");\n"
-"create table config (\n"
-"   term            VARCHAR(255)    NOT NULL,\n"
-"   subterm         VARCHAR(255)    DEFAULT NULL,\n"
-"   value           VARCHAR(1024)   NOT NULL\n"
-");\n"
-"insert into config values ('version','','13');\n";
+");\n";
 
-char *db_sqlite2_initial2 =
-"create table playlists (\n"
-"   id             INTEGER PRIMARY KEY NOT NULL,\n"
-"   title          VARCHAR(255) NOT NULL,\n"
-"   type           INTEGER NOT NULL,\n"
-"   items          INTEGER NOT NULL,\n"
-"   query          VARCHAR(1024),\n"
-"   db_timestamp   INTEGER NOT NULL,\n"
-"   path           VARCHAR(4096),\n"
-"   idx            INTEGER NOT NULL\n"
-");\n"
-"insert into playlists values (1,'Library',1,0,'1',0,'',0);\n";

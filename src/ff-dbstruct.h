@@ -14,7 +14,7 @@
 #define PL_QUERY            4
 #define PL_DB_TIMESTAMP     5
 #define PL_PATH             6
-#define PL_IDX              7
+#define PL_INDEX            7
 
 #define SG_ID               0
 #define SG_PATH             1
@@ -49,17 +49,15 @@
 #define SG_TIME_ADDED      30
 #define SG_TIME_MODIFIED   31
 #define SG_TIME_PLAYED     32
-#define SG_DB_TIMESTAMP    33
-#define SG_DISABLED        34
-#define SG_SAMPLE_COUNT    35
-#define SG_FORCE_UPDATE    36
-#define SG_CODECTYPE       37
-#define SG_IDX             38
-#define SG_HAS_VIDEO       39
-#define SG_CONTENTRATING   40
-#define SG_BITS_PER_SAMPLE 41
-#define SG_ALBUM_ARTIST    42
-
+#define SG_DISABLED        33
+#define SG_SAMPLE_COUNT    34
+#define SG_CODECTYPE       35
+#define SG_INDEX           36
+#define SG_HAS_VIDEO       37
+#define SG_CONTENTRATING   38
+#define SG_BITS_PER_SAMPLE 39
+#define SG_ALBUM_ARTIST    40
+#define SG_LAST            41  /* semaphore */
 
 /* Packed and unpacked formats */
 typedef struct tag_mp3file {
@@ -96,12 +94,10 @@ typedef struct tag_mp3file {
 
     uint32_t play_count;
     uint32_t rating;
-    uint32_t db_timestamp;
 
     uint32_t disabled;
     uint32_t bpm;         /* TBPM */
 
-    uint32_t got_id3;
     uint32_t id;
 
     char *description;  /* long file type */
@@ -109,9 +105,8 @@ typedef struct tag_mp3file {
 
     uint32_t item_kind;              /* song or movie */
     uint32_t data_kind;              /* dmap.datakind (asdk) */
-    uint32_t force_update;
     uint64_t sample_count;
-    char compilation;
+    uint32_t compilation;
 
     /* iTunes 5+ */
     uint32_t contentrating;
@@ -179,12 +174,11 @@ typedef struct tag_packed_mp3file {
     char *time_added;
     char *time_modified;
     char *time_played;
-    char *db_timestamp;
     char *disabled;
     char *sample_count;
     char *force_update;
     char *codectype;
-    char *idx;
+    char *index;
     char *has_video;
     char *contentrating;
     char *bits_per_sample;
@@ -224,6 +218,44 @@ typedef struct playlistobject_t {
 
 #define ppstring __data_u.__ppstring
 #define ppnative __data_u.__ppnative
+
+#define FT_INT32         0
+#define FT_INT64         1
+#define FT_STRING        2
+
+typedef struct field_lookup_t {
+    char *name;
+    char *dmap_name;
+    int type;
+    int offset;
+} FIELD_LOOKUP;
+
+
+#define QUERY_TYPE_ITEMS     0
+#define QUERY_TYPE_PLAYLISTS 1
+#define QUERY_TYPE_DISTINCT  2
+
+#define FILTER_TYPE_FIREFLY  0
+#define FILTER_TYPE_APPLE    1
+#define FILTER_TYPE_NONE     2
+
+/* query info for db enums */
+typedef struct tag_db_query {
+    int query_type;
+    char *distinct_field;
+    int filter_type;
+    char *filter;
+
+    int offset;
+    int limit;
+
+    int playlist_id;            /* for items query */
+    int totalcount;             /* returned total count */
+
+    void *priv;                 /* implementation private storage */
+} DB_QUERY;
+
+extern FIELD_LOOKUP ff_field_data[];
 
 #define PL_STATICWEB  0
 #define PL_SMART      1

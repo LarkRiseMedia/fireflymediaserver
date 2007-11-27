@@ -94,28 +94,6 @@ typedef struct tag_plugin_info {
     char *codeclist;              /* comma separated list of codecs */
 } PLUGIN_INFO;
 
-
-#define QUERY_TYPE_ITEMS     0
-#define QUERY_TYPE_PLAYLISTS 1
-#define QUERY_TYPE_DISTINCT  2
-
-#define FILTER_TYPE_FIREFLY  0
-#define FILTER_TYPE_APPLE    1
-
-typedef struct tag_db_query {
-    int query_type;
-    char *distinct_field;
-    int filter_type;
-    char *filter;
-
-    int offset;
-    int limit;
-
-    int playlist_id;            /* for items query */
-    int totalcount;             /* returned total count */
-    void *priv;
-} DB_QUERY;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -147,11 +125,11 @@ extern EXPORT int pi_db_enum_restart(char **, DB_QUERY *);
 extern EXPORT void pi_db_enum_dispose(char **, DB_QUERY*);
 extern EXPORT void pi_stream(struct tag_ws_conninfo *, char *);
 
-extern EXPORT int pi_db_add_playlist(char **pe, char *name, int type, char *clause, char *path, int index, int *playlistid);
-extern EXPORT int pi_db_add_playlist_item(char **pe, int playlistid, int songid);
-extern EXPORT int pi_db_edit_playlist(char **pe, int id, char *name, char *clause);
-extern EXPORT int pi_db_delete_playlist(char **pe, int playlistid);
-extern EXPORT int pi_db_delete_playlist_item(char **pe, int playlistid, int songid);
+extern EXPORT int pi_db_add_playlist(char **pe, char *name, int type, char *clause, char *path, int index, uint32_t *playlistid);
+extern EXPORT int pi_db_add_playlist_item(char **pe, uint32_t playlistid, uint32_t songid);
+extern EXPORT int pi_db_edit_playlist(char **pe, uint32_t id, char *name, char *clause);
+extern EXPORT int pi_db_delete_playlist(char **pe, uint32_t playlistid);
+extern EXPORT int pi_db_delete_playlist_item(char **pe, uint32_t playlistid, uint32_t songid);
 extern EXPORT int pi_db_revision(void);
 extern EXPORT int pi_db_count_items(int what);
 extern EXPORT int pi_db_wait_update(struct tag_ws_conninfo *);

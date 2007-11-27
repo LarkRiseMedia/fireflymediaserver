@@ -36,7 +36,7 @@
 #include <time.h>
 
 #include "daapd.h"
-#include "db-generic.h"
+#include "db.h"
 #include "err.h"
 #include "mp3-scanner.h"
 #include "os.h"
@@ -50,7 +50,7 @@ void scan_xml_handler(int action,void* puser,char* info);
 int scan_xml_preamble_section(int action,char *info);
 int scan_xml_tracks_section(int action,char *info);
 int scan_xml_playlists_section(int action,char *info);
-void scan_xml_add_lookup(int itunes_index, int mtd_index);
+void scan_xml_add_lookup(uint32_t itunes_index, uint32_t mtd_index);
 
 /* Globals */
 static char *scan_xml_itunes_version = NULL;
@@ -120,8 +120,8 @@ static char *scan_xml_track_tags[] = {
 #endif
 
 typedef struct scan_xml_rb_t {
-    int itunes_index;
-    int mtd_index;
+    uint32_t itunes_index;
+    uint32_t mtd_index;
 } SCAN_XML_RB;
 
 
@@ -281,7 +281,7 @@ int scan_xml_translate_path(char *pold, char *pnew) {
  * @param itunes_index the index from the itunes xml file
  * @param mtd_index the index from db_fetch_path
  */
-void scan_xml_add_lookup(int itunes_index, int mtd_index) {
+void scan_xml_add_lookup(uint32_t itunes_index, uint32_t mtd_index) {
     SCAN_XML_RB *pnew;
     const void *val;
 
@@ -307,7 +307,7 @@ void scan_xml_add_lookup(int itunes_index, int mtd_index) {
  * @param itunes_index index from the iTunes xml file
  * @returns the mt-daapd index
  */
-int scan_xml_get_index(int itunes_index, int *mtd_index) {
+int scan_xml_get_index(uint32_t itunes_index, uint32_t *mtd_index) {
     SCAN_XML_RB rb;
     SCAN_XML_RB *prb;
 
@@ -634,7 +634,7 @@ int scan_xml_tracks_section(int action, char *info) {
     static char *song_path=NULL;
     char real_path[PATH_MAX];
     MP3FILE *pmp3;
-    int added_id;
+    //    int added_id;
 
     if(action == RXML_EVT_OPEN) {
         state = XML_TRACK_ST_INITIAL;
@@ -732,7 +732,7 @@ int scan_xml_tracks_section(int action, char *info) {
                     scan_xml_add_lookup(current_track_id,pmp3->id);
 
                     make_composite_tags(pmp3);
-                    db_add(NULL,pmp3,NULL);
+                    db_add(NULL,pmp3);
                     db_dispose_item(pmp3);
                 }
             } else if(is_streaming) {
@@ -772,13 +772,14 @@ int scan_xml_tracks_section(int action, char *info) {
                 MAYBECOPYSTRING(album_artist);
 
                 make_composite_tags(pmp3);
-                if(db_add(NULL,pmp3,&added_id) == DB_E_SUCCESS) {
-                    scan_xml_add_lookup(current_track_id,added_id);
+                if(db_add(NULL,pmp3) == DB_E_SUCCESS) {
+                    scan_xml_add_lookup(current_track_id,pmp3->id);
                     DPRINTF(E_DBG,L_SCAN,"Added %s\n",song_path);
                 } else {
                     DPRINTF(E_DBG,L_SCAN,"Error adding %s\n",song_path);
                 }
 
+                /* FIXME: this assumes unpacked native format */
                 db_dispose_item(pmp3);
             }
 
@@ -882,12 +883,12 @@ int scan_xml_tracks_section(int action, char *info) {
 int scan_xml_playlists_section(int action, char *info) {
     static int state = XML_PL_ST_INITIAL;
     static int next_value=0;         /** < what's next song info id or name */
-    static int native_plid=0;        /** < the iTunes playlist id */
-    static int current_id=0;         /** < the mt-daapd playlist id */
+    static uint32_t native_plid=0;   /** < the iTunes playlist id */
+    static uint32_t current_id=0;    /** < the mt-daapd playlist id */
     static char *current_name=NULL;  /** < the iTunes playlist name */
     static int dont_scan=0;          /** < playlist we don't want */
-    int native_track_id;             /** < the iTunes id of the track */
-    int track_id;                    /** < the mt-daapd track id */
+    uint32_t native_track_id;        /** < the iTunes id of the track */
+    uint32_t track_id;               /** < the mt-daapd track id */
 
     M3UFILE *pm3u;
 

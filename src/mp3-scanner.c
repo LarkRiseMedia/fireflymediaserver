@@ -48,7 +48,7 @@
 
 #include "daapd.h"
 #include "conf.h"
-#include "db-generic.h"
+#include "db.h"
 #include "err.h"
 #include "io.h"
 #include "mp3-scanner.h"
@@ -274,10 +274,12 @@ int scan_init(char **patharray) {
 
     DPRINTF(E_DBG,L_SCAN,"Starting scan_init\n");
 
+    /*
     if(db_start_scan()) {
         DPRINTF(E_DBG,L_SCAN,"Error in db_start_scan()\n");
         return -1;
     }
+    */
 
     scan_playlistlist.next=NULL;
 
@@ -288,7 +290,7 @@ int scan_init(char **patharray) {
         index++;
     }
 
-    if(util_must_exit() || db_end_song_scan())
+    if(util_must_exit()) // || db_end_song_scan())
         return -1;
 
     if(!util_must_exit()) {
@@ -296,8 +298,10 @@ int scan_init(char **patharray) {
         scan_process_playlistlist();
     }
 
+    /*
     if(db_end_scan())
         return -1;
+    */
 
     return err;
 }
@@ -429,7 +433,7 @@ int scan_static_playlist(char *path) {
     char real_path[PATH_MAX];
     char linebuffer[PATH_MAX];
     IOHANDLE hfile;
-    int playlistid;
+    uint32_t playlistid;
     M3UFILE *pm3u;
     MP3FILE *pmp3;
     struct stat sb;
@@ -625,8 +629,7 @@ void scan_filename(char *path, int compdir, char *extensions) {
                     mod_time = (int)sb.st_mtime;
                     pmp3 = db_fetch_path(NULL,mp3_path,0);
 
-                    if((!pmp3) || (pmp3->db_timestamp < mod_time) ||
-                       (pmp3->force_update)) {
+                    if((!pmp3) || (pmp3->time_modified < mod_time)) {
                         scan_music_file(path,fname,&sb,is_compdir);
                     } else {
                         DPRINTF(E_DBG,L_SCAN,"Skipping file, not modified\n");
@@ -717,7 +720,7 @@ void scan_music_file(char *path, char *fname,
         DPRINTF(E_DBG,L_SCAN," Codec: %s\n",mp3file.codectype);
 
         /* FIXME: error handling */
-        db_add(NULL,&mp3file,NULL);
+        db_add(NULL,&mp3file);
     } else {
         DPRINTF(E_WARN,L_SCAN,"Skipping %s - scan failed\n",mp3file.path);
     }

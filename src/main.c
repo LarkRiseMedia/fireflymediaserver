@@ -84,7 +84,7 @@
 #include "mp3-scanner.h"
 #include "webserver.h"
 #include "restart.h"
-#include "db-generic.h"
+#include "db.h"
 #include "os.h"
 #include "plugin.h"
 #include "util.h"
@@ -655,7 +655,7 @@ int main(int argc, char *argv[]) {
             if(conf_get_array("general","mp3_dir",&mp3_dir_array)) {
                 if(config.full_reload) {
                     config.full_reload=0;
-                    db_force_rescan(NULL);
+                    /* FIXME: force rescans */
                 }
 
                 if(scan_init(mp3_dir_array)) {

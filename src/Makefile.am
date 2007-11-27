@@ -46,10 +46,6 @@ if COND_SQLITE3
 SQLITE3DB=db-sql-sqlite3.c db-sql-sqlite3.h
 endif
 
-if COND_SQL
-SQLDB=db-sql.c db-sql.h
-endif
-
 if COND_GDBM
 GDBM=db-gdbm.c db-gdbm.h
 endif
@@ -64,7 +60,7 @@ wavstreamer_SOURCES = wavstreamer.c
 mt_daapd_SOURCES = main.c daapd.h rend.h webserver.c \
 	webserver.h configfile.c configfile.h err.c err.h restart.c restart.h \
 	mp3-scanner.h mp3-scanner.c rend-unix.h \
-	db-generic.c db-generic.h ff-plugins.c ff-plugins.h \
+	db.c db.h  ff-plugins.c ff-plugins.h \
 	rxml.c rxml.h redblack.c redblack.h scan-mp3.c scan-aif.c \
 	scan-xml.c scan-wma.c scan-aac.c scan-aac.h scan-wav.c scan-url.c \
 	smart-parser.c smart-parser.h xml-rpc.c xml-rpc.h \
@@ -77,7 +73,7 @@ mt_daapd_SOURCES = main.c daapd.h rend.h webserver.c \
 	$(UPNP)
 
 EXTRA_DIST = rend-howl.c rend-posix.c rend-osx.c scan-mpc.c \
-	scan-ogg.c scan-flac.c db-sql.c db-sql.h \
+	scan-ogg.c scan-flac.c \
 	db-sql-sqlite2.h db-sql-sqlite2.c \
 	db-sql-sqlite3.h db-sql-sqlite3.c \
 	w32-eventlog.c w32-eventlog.h w32-service.c w32-service.h \

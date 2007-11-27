@@ -23,6 +23,7 @@
 # include "config.h"
 #endif
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +31,7 @@
 #include <unistd.h>
 
 #include "daapd.h"
-#include "db-generic.h"
+#include "db.h"
 #include "err.h"
 #include "smart-parser.h"
 #include "ff-dbstruct.h"
@@ -57,7 +58,7 @@ typedef struct playlist_t {
 
 /** Globals */
 static PLAYLIST pl_list = { NULL, NULL, NULL, NULL };
-uint64_t pl_id = 2;
+uint64_t pl_id = 1;     // First playlist to be created will be the library
 char *pl_error_list[] = {
     "Success",
     "Can't create smart playlist without query",
@@ -158,7 +159,7 @@ int pl_compare(const void *v1, const void *v2, const void *vso) {
  * @param
  */
 int pl_update_smart(char **pe, PLAYLIST *ppl) {
-    DBQUERYINFO dbq;
+    DB_QUERY dbq;
     MEDIAOBJECT pmo;
     int err;
     int song_id;
@@ -175,10 +176,11 @@ int pl_update_smart(char **pe, PLAYLIST *ppl) {
     /* FIXME: use the passed filter if the underlying db supports queries */
     memset((void*)&dbq,0,sizeof(dbq));
 
-    dbq.query_type = queryTypeItems;
-    dbq.index_type = indexTypeNone;
+    dbq.query_type = QUERY_TYPE_ITEMS;
+    dbq.filter_type = FILTER_TYPE_NONE;
+    dbq.offset = 0;
+    dbq.limit = INT_MAX;
     dbq.playlist_id = 1;
-    dbq.db_id = 1;
 
     if((err=db_enum_start(&e_db,&dbq)) != 0) {
         pl_set_error(pe,PL_E_DBERROR,e_db);
@@ -189,8 +191,10 @@ int pl_update_smart(char **pe, PLAYLIST *ppl) {
 
     /* now fetch each and see if it applies to this playlist */
     pmo.kind = OBJECT_TYPE_STRING;
-    while((DB_E_SUCCESS == (err = db_enum_fetch_row(&e_db, pmo.pmstring, &dbq))) && (&pmo.pmstring)) {
-        /* got one.. */
+    while((DB_E_SUCCESS == (err = db_enum_fetch_row(&e_db, &pmo.pmstring, &dbq))) && (&pmo.pmstring)) {
+        /* FIXME: this is half ready for native media objects */
+        pmo.kind = OBJECT_TYPE_STRING;
+
         if(pmo.kind == OBJECT_TYPE_STRING)
             song_id = atoi(pmo.pmstring->id);
         else
@@ -656,6 +660,42 @@ int pl_get_playlist_count(char **pe, int *count) {
     return PL_E_SUCCESS;
 }
 
+
+/**
+ * return a playlist (in native format) for a particular playlist id
+ *
+ * @param pe error buffer
+ * @param id id of playlist to fetch
+ */
+PLAYLIST_NATIVE *pl_fetch_playlist_id(char **pe, uint32_t id) {
+    PLAYLIST *ppl;
+    PLAYLIST_NATIVE *pnew;
+
+    util_mutex_lock(l_pl);
+    if(NULL == (ppl = pl_find(id))) {
+        util_mutex_unlock(l_pl);
+        pl_set_error(pe,PL_E_NOTFOUND,id);
+        return NULL;
+    }
+
+    pnew = (PLAYLIST_NATIVE*)malloc(sizeof(PLAYLIST_NATIVE));
+    if(!pnew) {
+        DPRINTF(E_FATAL,L_PL,"pl_fetch_playlist: malloc\n");
+        pl_set_error(pe, PL_E_MALLOC);
+        util_mutex_unlock(l_pl);
+        return NULL;
+    }
+
+    memcpy(pnew,ppl->ppln,sizeof(PLAYLIST_NATIVE));
+    if(ppl->ppln->title) pnew->title = strdup(ppl->ppln->title);
+    if(ppl->ppln->query) pnew->query = strdup(ppl->ppln->query);
+    if(ppl->ppln->path) pnew->path = strdup(ppl->ppln->path);
+
+    util_mutex_unlock(l_pl);
+    return pnew;
+}
+
+
 /**
  * return a playlist (in native format)
  *
@@ -682,8 +722,12 @@ PLAYLIST_NATIVE *pl_fetch_playlist(char **pe, char *path, uint32_t index) {
         if(ppl->ppln->path && (0 == strcasecmp(ppl->ppln->path,path))) {
             if(ppl->ppln->index == index) {
                 pnew = (PLAYLIST_NATIVE*)malloc(sizeof(PLAYLIST_NATIVE));
-                if(!pnew)
+                if(!pnew) {
                     DPRINTF(E_FATAL,L_PL,"pl_fetch_playlist: malloc\n");
+                    util_mutex_unlock(l_pl);
+                    pl_set_error(pe, PL_E_MALLOC);
+                    return NULL;
+                }
 
                 memcpy(pnew,ppl->ppln,sizeof(PLAYLIST_NATIVE));
                 if(ppl->ppln->title) pnew->title = strdup(ppl->ppln->title);

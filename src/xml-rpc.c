@@ -37,7 +37,7 @@
 
 #include "configfile.h"
 #include "conf.h"
-#include "db-generic.h"
+#include "db.h"
 #include "err.h"
 #include "mp3-scanner.h"
 #include "os.h"
