@@ -269,11 +269,9 @@ MEDIA_STRING *db_sqlite2_fetch_item(char **pe, uint32_t id) {
     char **row = NULL;
     int err;
 
-    DPRINTF(E_DBG,L_DB,"Fetching db item %d\n",id);
     if(DB_E_SUCCESS != (err = db_sqlite2_fetch_row(pe, &row, "select * from songs where id=%d",id)))
         return NULL;
 
-    DPRINTF(E_DBG,L_DB,"Got %s\n",((MEDIA_STRING*)row)->title);
     return (MEDIA_STRING *)row;
 }
 

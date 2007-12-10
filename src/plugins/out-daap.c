@@ -1197,6 +1197,7 @@ void out_daap_items(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
     }
 
     ppi->dq.query_type = QUERY_TYPE_ITEMS;
+    ppi->dq.playlist_id = 1;
 
     if(pi_db_enum_start(&pe,&ppi->dq)) {
         pi_log(E_LOG,"Could not start enum: %s\n",pe);

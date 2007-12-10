@@ -128,8 +128,6 @@ int pl_compare(const void *v1, const void *v2, const void *vso) {
 
     int result = 1; // default - return in insert order
 
-    DPRINTF(E_DBG,L_PL,"Comparing %d and %d\n",id1, id2);
-
     /* FIXME: look these things up from a LRU cache based on tree depth */
     p1 = db_fetch_item(NULL, id1);
     if(!p1) {
@@ -204,10 +202,7 @@ int pl_update_smart(char **pe, PLAYLIST *ppl) {
     while((DB_E_SUCCESS == (err = db_enum_fetch(&e_db, (char ***)&pms, &dbq))) && (pms)) {
         song_id = strtoul(pms->id,NULL,10);
 
-        DPRINTF(E_DBG,L_PL,"Checking %s\n",pms->title);
-
         if(sp_matches_string(ppl->pt, pms)) {
-            DPRINTF(E_DBG,L_PL,"Matches!\n");
             if(PL_E_SUCCESS != (err = pl_add_playlist_item(pe, ppl->ppln->id, song_id))) {
                 DPRINTF(E_DBG,L_PL,"can't add item to playlist\n");
                 db_enum_end(NULL,&dbq);
@@ -787,6 +782,8 @@ void pl_dispose_playlist(PLAYLIST_NATIVE *ppln) {
 /**
  * walk a playlist.  This assumes that a readlock
  * is held
+ *
+ * FIXME: Use rbopenlist, rbreadlist and rbcloselist
  */
 PLENUMHANDLE pl_enum_items_start(char **pe, uint32_t playlist_id) {
     PLENUMHANDLE pleh;

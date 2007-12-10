@@ -531,7 +531,6 @@ int sp_scan(PARSETREE tree, int hint) {
     /* check symbols */
     if(!tree->in_string) {
         pfield=sp_symbols[tree->token_list];
-        tree->token.field_id = 0;
         while(pfield->name) {
             if(!strncmp(pfield->name,tree->current,strlen(pfield->name))) {
                 /* that's a match */
@@ -540,7 +539,6 @@ int sp_scan(PARSETREE tree, int hint) {
                 return pfield->type;
             }
             pfield++;
-            tree->token.field_id++;
         }
     }
 
@@ -585,6 +583,7 @@ int sp_scan(PARSETREE tree, int hint) {
     if(!tree->in_string) {
         /* find it in the token list */
         pfield=sp_fields[tree->token_list];
+        tree->token.field_id = 0;
         while(pfield->name) {
             DPRINTF(E_SPAM,L_PARSE,"Comparing to %s\n",pfield->name);
             if(strlen(pfield->name) == len) {
@@ -594,6 +593,7 @@ int sp_scan(PARSETREE tree, int hint) {
                 }
             }
             pfield++;
+            tree->token.field_id++;
         }
     }
 
@@ -1571,9 +1571,10 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
     uint32_t val_uint32;
     uint64_t val_uint64;
     time_t val_date;
-    int result = 0;
+    int result = FALSE;
     int offset;
     int is_native = (pmn != NULL);
+    char **tmp;
 
     ASSERT((pmn)||(pms));
 
@@ -1593,7 +1594,10 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
     // Actually check the node
     if(node->op_type == SP_OPTYPE_STRING) {
         if(!is_native) {
-            val_string = ((char*)pms) + node->field_id;
+            tmp = (char **)pms;
+            val_string = tmp[node->field_id];
+            val_string = tmp[node->field_id] ? tmp[node->field_id] : "";
+
         } else {
             val_string = (char*) (((void*)pmn)
                                   + pl_offsets[node->field_id]);
@@ -1601,23 +1605,24 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
 
         switch(node->op) {
         case T_INCLUDES:
-            if(strcasestr(val_string,node->right.cvalue) == 0)
-                result = 1;
+            if(strcasestr(val_string,node->right.cvalue))
+                result = TRUE;
             break;
         case T_STARTSWITH:
-            if(strncasecmp(val_string,node->right.cvalue,strlen(node->right.cvalue)) == 0)
-                result = 1;
+            if(strlen(node->right.cvalue) <= strlen(val_string) &&
+               (strncasecmp(val_string,node->right.cvalue,strlen(node->right.cvalue)) == 0))
+                result = TRUE;
             break;
         case T_ENDSWITH:
             offset = strlen(val_string) - strlen(node->right.cvalue);
             if(offset >= 0) {
-                if(strncasecmp(val_string,node->right.cvalue+offset,strlen(node->right.cvalue)) == 0)
-                    result = 1;
+                if(strncasecmp(val_string+offset,node->right.cvalue,strlen(node->right.cvalue)) == 0)
+                    result = TRUE;
             }
             break;
         case T_EQUAL:
             if(strcasecmp(val_string, node->right.cvalue) == 0)
-                result = 1;
+                result = TRUE;
             break;
         default:
             DPRINTF(E_FATAL,L_PARSE,"Bad string op\n");
@@ -1625,7 +1630,11 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
         }
     } else if(node->op_type == SP_OPTYPE_INT) {
         if(!is_native) {
-            val_uint32 = strtoul(((char*)pms) + node->field_id,NULL,10);
+            tmp = (char **)pms;
+            if(tmp[node->field_id])
+                val_uint32 = strtoul(tmp[node->field_id],NULL,10);
+            else
+                val_uint32 = 0;
         } else {
             val_uint32 = *((uint32_t*) (((void*)pmn)
                                         + pl_offsets[node->field_id]));
@@ -1633,23 +1642,23 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
         switch(node->op) {
         case T_LESSEQUAL:
             if(val_uint32 <= node->right.ivalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_LESS:
             if(val_uint32 < node->right.ivalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_GREATEREQUAL:
             if(val_uint32 >= node->right.ivalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_GREATER:
             if(val_uint32 > node->right.ivalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_EQUAL:
             if(val_uint32 == node->right.ivalue)
-                result = 1;
+                result = TRUE;
             break;
         default:
             DPRINTF(E_FATAL,L_PARSE,"Bad int op\n");
@@ -1657,7 +1666,11 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
         }
     } else if(node->op_type == SP_OPTYPE_INT64) {
         if(!is_native) {
-            val_uint64 = strtoull(((char*)pms) + node->field_id,NULL,10);
+            tmp = (char**)pms;
+            if(tmp)
+                val_uint64 = strtoull(tmp[node->field_id],NULL,10);
+            else
+                val_uint64 = 0;
         } else {
             val_uint64 = *((uint64_t*) (((void*)pmn)
                                         + pl_offsets[node->field_id]));
@@ -1665,23 +1678,23 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
         switch(node->op) {
         case T_LESSEQUAL:
             if(val_uint64 <= node->right.ivalue64)
-                result = 1;
+                result = TRUE;
             break;
         case T_LESS:
             if(val_uint64 < node->right.ivalue64)
-                result = 1;
+                result = TRUE;
             break;
         case T_GREATEREQUAL:
             if(val_uint64 >= node->right.ivalue64)
-                result = 1;
+                result = TRUE;
             break;
         case T_GREATER:
             if(val_uint64 > node->right.ivalue64)
-                result = 1;
+                result = TRUE;
             break;
         case T_EQUAL:
             if(val_uint64 == node->right.ivalue64)
-                result = 1;
+                result = TRUE;
             break;
         default:
             DPRINTF(E_FATAL,L_PARSE,"Bad int64 op\n");
@@ -1689,7 +1702,11 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
         }
     } else if(node->op_type == SP_OPTYPE_DATE) {
         if(!is_native) {
-            val_date = (time_t)strtoul(((char*)pms) + node->field_id,NULL,10);
+            tmp = (char**)pms;
+            if(tmp)
+                val_date = (time_t)strtoul(tmp[node->field_id],NULL,10);
+            else
+                val_date = 0;
         } else {
             val_date = *((uint32_t*) (((void*)pmn)
                                         + pl_offsets[node->field_id]));
@@ -1697,23 +1714,23 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
         switch(node->op) {
         case T_LESSEQUAL:
             if(val_date <= node->right.tvalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_LESS:
             if(val_date < node->right.tvalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_GREATEREQUAL:
             if(val_date >= node->right.tvalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_GREATER:
             if(val_date > node->right.tvalue)
-                result = 1;
+                result = TRUE;
             break;
         case T_EQUAL:
             if(val_date == node->right.tvalue)
-                result = 1;
+                result = TRUE;
             break;
         default:
             DPRINTF(E_FATAL,L_PARSE,"Bad date op\n");
