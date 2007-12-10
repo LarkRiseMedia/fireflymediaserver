@@ -73,7 +73,6 @@ PLUGIN_RESPONSE rsp_uri_map[] = {
 #define E_RSP    0x0000
 #define E_DB     0x1000
 
-
 #define T_STRING 0
 #define T_INT    1
 #define T_DATE   2
@@ -307,7 +306,6 @@ void rsp_db(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
 
     if((err=pi_db_enum_start(&pe,&ppi->dq)) != 0) {
         rsp_error(pwsc, ppi, err | E_DB, pe);
-        pi_db_enum_dispose(NULL,&ppi->dq);
         return;
     }
 
@@ -337,8 +335,7 @@ void rsp_db(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
         xml_pop(pxml); /* playlist */
     }
 
-    pi_db_enum_end(NULL);
-    pi_db_enum_dispose(NULL,&ppi->dq);
+    pi_db_enum_end(NULL,&ppi->dq);
 
     xml_pop(pxml); /* playlists */
     xml_pop(pxml); /* response */
@@ -390,7 +387,6 @@ void rsp_playlist(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
 
     if((err=pi_db_enum_start(&pe,&ppi->dq)) != 0) {
         rsp_error(pwsc, ppi, err | E_DB, pe);
-        pi_db_enum_dispose(NULL,&ppi->dq);
         free(pe);
         return;
     }
@@ -470,7 +466,7 @@ void rsp_playlist(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
         xml_pop(pxml); /* item */
     }
 
-    pi_db_enum_end(NULL);
+    pi_db_enum_end(NULL, &ppi->dq);
 
     xml_pop(pxml); /* items */
     xml_pop(pxml); /* response */
@@ -487,7 +483,19 @@ void rsp_browse(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
 
     /* this might fail if an unsupported browse type */
     ppi->dq.query_type = QUERY_TYPE_DISTINCT;
-    ppi->dq.distinct_field = ppi->uri_sections[3];
+
+    /* find field number for distinct */
+    ppi->dq.distinct_field = 0;
+    while(ppi->dq.distinct_field < SG_LAST &&
+          (strcasecmp(ff_field_data[ppi->dq.distinct_field].name,ppi->uri_sections[3])))
+        ppi->dq.distinct_field++;
+
+    if(SG_LAST == ppi->dq.distinct_field) {
+        rsp_error(pwsc, ppi, E_RSP, "Invalid browse field");
+        return;
+    }
+
+
     ppi->dq.filter = pi_ws_getvar(pwsc,"query");
     ppi->dq.filter_type = FILTER_TYPE_FIREFLY;
 
@@ -503,7 +511,6 @@ void rsp_browse(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
 
     if((err=pi_db_enum_start(&pe,&ppi->dq)) != 0) {
         rsp_error(pwsc, ppi, err | E_DB, pe);
-        pi_db_enum_dispose(NULL,&ppi->dq);
         return;
     }
 
@@ -532,8 +539,7 @@ void rsp_browse(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
         xml_output(pxml,"item","%s",row[0]);
     }
 
-    pi_db_enum_end(NULL);
-    pi_db_enum_dispose(NULL,&ppi->dq);
+    pi_db_enum_end(NULL,&ppi->dq);
 
     xml_pop(pxml); /* items */
     xml_pop(pxml); /* response */

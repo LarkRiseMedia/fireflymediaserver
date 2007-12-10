@@ -14,7 +14,8 @@ extern int sp_parse(PARSETREE tree, char *term, int type);
 extern int sp_dispose(PARSETREE tree);
 extern char *sp_get_error(PARSETREE tree);
 extern char *sp_sql_clause(PARSETREE tree);
-extern int sp_matches(PARSETREE tree, MEDIAOBJECT *pmo);
+int sp_matches_native(PARSETREE tree, MEDIA_NATIVE *pmn);
+int sp_matches_string(PARSETREE tree, MEDIA_STRING *pms);
 
 #define SP_TYPE_PLAYLIST 0
 #define SP_TYPE_QUERY    1

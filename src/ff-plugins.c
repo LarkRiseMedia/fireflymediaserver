@@ -192,27 +192,21 @@ EXPORT int pi_should_transcode(WS_CONNINFO *pwsc, char *codec) {
     return plugin_ssc_should_transcode(pwsc,codec);
 }
 
-
 EXPORT int pi_db_enum_start(char **pe, DB_QUERY *pquery) {
     return db_enum_start(pe, pquery);
 }
 
 /* FIXME: return native media object */
-EXPORT int pi_db_enum_fetch_row(char **pe, char ***row, DB_QUERY *pquery) {
-    return db_enum_fetch_row(pe, (MEDIA_STRING **)row,pquery);
+EXPORT int pi_db_enum_fetch_row(char **pe, char ***result, DB_QUERY *pquery) {
+    return db_enum_fetch(pe, result, pquery);
 }
 
-EXPORT int pi_db_enum_end(char **pe) {
-    return db_enum_end(pe);
+EXPORT int pi_db_enum_end(char **pe, DB_QUERY *pinfo) {
+    return db_enum_end(pe, pinfo);
 }
 
 EXPORT int pi_db_enum_restart(char **pe, DB_QUERY *pinfo) {
     return db_enum_reset(pe,pinfo);
-}
-
-/* FIXME: stubbed out -- could be done with the _end */
-EXPORT void pi_db_enum_dispose(char **pe, DB_QUERY *pquery) {
-    return;
 }
 
 EXPORT void pi_stream(WS_CONNINFO *pwsc, char *id) {

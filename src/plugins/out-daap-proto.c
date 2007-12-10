@@ -488,8 +488,7 @@ int daap_enum_size(char **pe, PRIVINFO *pinfo, int *count, int *total_size) {
     }
 
     if(err) {
-        pi_db_enum_end(NULL);
-        pi_db_enum_dispose(NULL,&pinfo->dq);
+        pi_db_enum_end(NULL,&pinfo->dq);
         return err;
     }
 
@@ -510,8 +509,7 @@ int daap_enum_fetch(char **pe, PRIVINFO *pinfo, int *size, unsigned char **pdmap
 
     err=pi_db_enum_fetch_row(pe, &row, &pinfo->dq);
     if(err) {
-        pi_db_enum_end(NULL);
-        pi_db_enum_dispose(NULL,&pinfo->dq);
+        pi_db_enum_end(NULL,&pinfo->dq);
         return err;
     }
 

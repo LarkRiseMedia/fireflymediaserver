@@ -27,7 +27,6 @@
 extern int db_sql_escape(char *buffer, int *size, char *fmt, ...);
 #endif
 
-
 typedef struct tag_token {
     int token_id;
     int field_id;
@@ -341,7 +340,7 @@ int pl_offsets[] = {
     OFFSET_OF(MEDIA_NATIVE,disabled),
     OFFSET_OF(MEDIA_NATIVE,sample_count),
     OFFSET_OF(MEDIA_NATIVE,codectype),     // 35
-    OFFSET_OF(MEDIA_NATIVE,index),
+    OFFSET_OF(MEDIA_NATIVE,idx),
     OFFSET_OF(MEDIA_NATIVE,has_video),
     OFFSET_OF(MEDIA_NATIVE,contentrating),
     OFFSET_OF(MEDIA_NATIVE,bits_per_sample),
@@ -409,7 +408,7 @@ static time_t sp_parse_date(PARSETREE tree);
 static time_t sp_parse_date_interval(PARSETREE tree);
 static void sp_free_node(SP_NODE *node);
 static void sp_set_error(PARSETREE tree,int error);
-static int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo);
+static int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn);
 
 /**
  * simple logging funcitons
@@ -1542,11 +1541,22 @@ void sp_set_error(PARSETREE tree, int error) {
  * see if the given parse tree matches the passed mediaobject
  *
  * @param tree parsetree to chedk
- * @param pmo media object to compare to parse tree
+ * @param pmn native media object to compare to parse tree
  * @returns TRUE if successful match, FALSE otherwise
  */
-int sp_matches(PARSETREE tree, MEDIAOBJECT *pmo) {
-    return sp_node_matches(tree->tree, pmo);
+int sp_matches_native(PARSETREE tree, MEDIA_NATIVE *pmn) {
+    return sp_node_matches(tree->tree, NULL, pmn);
+}
+
+/**
+ * see if the given parse tree matches the passed mediaobject
+ *
+ * @param tree parsetree to chedk
+ * @param pms string media object to compare to parse tree
+ * @returns TRUE if successful match, FALSE otherwise
+ */
+int sp_matches_string(PARSETREE tree, MEDIA_STRING *pms) {
+    return sp_node_matches(tree->tree, pms, NULL);
 }
 
 /**
@@ -1556,30 +1566,36 @@ int sp_matches(PARSETREE tree, MEDIAOBJECT *pmo) {
  * @param pmo media object to compare to parse tree
  * @returns TRUE if successful match, FALSE otherwise
  */
-int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo) {
+int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
     char *val_string;
     uint32_t val_uint32;
     uint64_t val_uint64;
     time_t val_date;
     int result = 0;
     int offset;
+    int is_native = (pmn != NULL);
+
+    ASSERT((pmn)||(pms));
+
+    if((!pmn) && (!pms))
+        return FALSE;
 
     if(node->op_type == SP_OPTYPE_ANDOR) {
         if(node->op == T_AND) {
-            return (sp_node_matches(node->right.node,pmo) &&
-                    sp_node_matches(node->left.node,pmo));
+            return (sp_node_matches(node->right.node,pms,pmn) &&
+                    sp_node_matches(node->left.node,pms,pmn));
         } else {
-            return (sp_node_matches(node->right.node,pmo) ||
-                    sp_node_matches(node->left.node,pmo));
+            return (sp_node_matches(node->right.node,pms,pmn) ||
+                    sp_node_matches(node->left.node,pms,pmn));
         }
     }
 
     // Actually check the node
     if(node->op_type == SP_OPTYPE_STRING) {
-        if(pmo->kind == OBJECT_TYPE_STRING) {
-            val_string = ((char*)pmo->pmstring) + node->field_id;
+        if(!is_native) {
+            val_string = ((char*)pms) + node->field_id;
         } else {
-            val_string = (char*) (((void*)pmo->pmnative)
+            val_string = (char*) (((void*)pmn)
                                   + pl_offsets[node->field_id]);
         }
 
@@ -1608,10 +1624,10 @@ int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo) {
             break;
         }
     } else if(node->op_type == SP_OPTYPE_INT) {
-        if(pmo->kind == OBJECT_TYPE_STRING) {
-            val_uint32 = strtoul(((char*)pmo->pmstring) + node->field_id,NULL,10);
+        if(!is_native) {
+            val_uint32 = strtoul(((char*)pms) + node->field_id,NULL,10);
         } else {
-            val_uint32 = *((uint32_t*) (((void*)pmo->pmnative)
+            val_uint32 = *((uint32_t*) (((void*)pmn)
                                         + pl_offsets[node->field_id]));
         }
         switch(node->op) {
@@ -1640,10 +1656,10 @@ int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo) {
             break;
         }
     } else if(node->op_type == SP_OPTYPE_INT64) {
-        if(pmo->kind == OBJECT_TYPE_STRING) {
-            val_uint64 = strtoull(((char*)pmo->pmstring) + node->field_id,NULL,10);
+        if(!is_native) {
+            val_uint64 = strtoull(((char*)pms) + node->field_id,NULL,10);
         } else {
-            val_uint64 = *((uint64_t*) (((void*)pmo->pmnative)
+            val_uint64 = *((uint64_t*) (((void*)pmn)
                                         + pl_offsets[node->field_id]));
         }
         switch(node->op) {
@@ -1672,10 +1688,10 @@ int sp_node_matches(SP_NODE *node, MEDIAOBJECT *pmo) {
             break;
         }
     } else if(node->op_type == SP_OPTYPE_DATE) {
-        if(pmo->kind == OBJECT_TYPE_STRING) {
-            val_date = (time_t)strtoul(((char*)pmo->pmstring) + node->field_id,NULL,10);
+        if(!is_native) {
+            val_date = (time_t)strtoul(((char*)pms) + node->field_id,NULL,10);
         } else {
-            val_date = *((uint32_t*) (((void*)pmo->pmnative)
+            val_date = *((uint32_t*) (((void*)pmn)
                                         + pl_offsets[node->field_id]));
         }
         switch(node->op) {

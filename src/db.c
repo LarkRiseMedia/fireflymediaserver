@@ -62,18 +62,19 @@ typedef struct tag_plugin_db_fn {
     // proper db functions
     int(*db_add)(char **, MEDIA_NATIVE *);
     int(*db_enum_start)(char **);
-    int(*db_enum_fetch_native)(char **, MEDIA_NATIVE **);
-    int(*db_enum_fetch_string)(char **, MEDIA_STRING **);
+    int(*db_enum_fetch)(char **, MEDIA_STRING **);
     int(*db_enum_reset)(char **);
     int(*db_enum_end)(char**);
 
-    MEDIA_NATIVE *(*db_fetch_item_native)(char **, uint32_t);
-    MEDIA_STRING *(*db_fetch_item_string)(char **, uint32_t);
+    MEDIA_STRING *(*db_fetch_item)(char **, uint32_t);
+    void (*db_dispose_item)(MEDIA_STRING *);
 
-    /* dispose functions for the fetch_item functions */
-    void (*db_dispose_item_native)(MEDIA_NATIVE *);
-    void (*db_dispose_item_string)(MEDIA_STRING *);
 } PLUGIN_DB_FN;
+
+typedef struct enum_helper_t {
+    PLENUMHANDLE handle;
+    char **result;
+} ENUMHELPER;
 
 #define MAYBEFREE(a) if((a)) free((a));
 
@@ -124,7 +125,7 @@ FIELD_LOOKUP ff_field_data[] = {
     FF_FIELD_ENTRY(disabled,NULL,FT_INT32),
     FF_FIELD_ENTRY(sample_count,NULL,FT_INT64),
     FF_FIELD_ENTRY(codectype,NULL,FT_STRING),                          // 35
-    FF_FIELD_ENTRY(index,NULL,FT_INT32),
+    FF_FIELD_ENTRY(idx,NULL,FT_INT32),
     FF_FIELD_ENTRY(has_video,NULL,FT_INT32),
     FF_FIELD_ENTRY(contentrating,NULL,FT_INT32),
     FF_FIELD_ENTRY(bits_per_sample,NULL,FT_INT32),
@@ -163,6 +164,7 @@ static int db_utf8_validate_string(char *string);
 static void db_trim_strings(MP3FILE *pmp3);
 static void db_trim_string(char *string);
 static MEDIA_NATIVE *db_string_to_native(MEDIA_STRING *pmos);
+static MEDIA_STRING *db_native_to_string(MEDIA_NATIVE *pmon);
 static void db_set_error(char **pe, int err, ...);
 
 static char *db_util_strdup(char *string);
@@ -172,8 +174,6 @@ static uint64_t db_util_atoui64(char *string);
 #define DB_STR_COPY(field) pnew->field=db_util_strdup(pmos->field)
 #define DB_INT32_COPY(field) pnew->field=db_util_atoui32(pmos->field)
 #define DB_INT64_COPY(field) pnew->field=db_util_atoui64(pmos->field)
-
-
 
 /*
  * db_readlock
@@ -280,9 +280,11 @@ int db_open(char **pe, char *type, char *parameters) {
         db_pfn->db_close = db_sqlite2_close;
         db_pfn->db_add = db_sqlite2_add;
         db_pfn->db_enum_start = db_sqlite2_enum_begin;
-        db_pfn->db_enum_fetch_string = db_sqlite2_enum_fetch;
+        db_pfn->db_enum_fetch = db_sqlite2_enum_fetch;
         db_pfn->db_enum_reset = db_sqlite2_enum_restart;
         db_pfn->db_enum_end = db_sqlite2_enum_end;
+        db_pfn->db_fetch_item = db_sqlite2_fetch_item;
+        db_pfn->db_dispose_item = db_sqlite2_dispose_item;
     }
 #endif
 #ifdef HAVE_LIBSQLITE3
@@ -291,7 +293,7 @@ int db_open(char **pe, char *type, char *parameters) {
         db_pfn->db_close = db_sqlite3_close;
         db_pfn->db_add = db_sqlite3_add;
         db_pfn->db_enum_start = db_sqlite3_enum_begin;
-        db_pfn->db_enum_fetch_string = db_sqlite3_enum_fetch;
+        db_pfn->db_enum_fetch = db_sqlite3_enum_fetch;
         db_pfn->db_enum_reset = db_sqlite3_enum_restart;
         db_pfn->db_enum_end = db_sqlite3_enum_end;
     }
@@ -318,12 +320,39 @@ int db_open(char **pe, char *type, char *parameters) {
  */
 int db_init(int reload) {
     uint32_t id;
+    int result;
+    char *pe;
+    MEDIA_STRING *pmo;
+    uint32_t m_id;
 
     pl_add_playlist(NULL,"Library",PL_STATICWEB,NULL,NULL,0,&id);
     if(id != 1) {
         DPRINTF(E_FATAL,L_DB,"Can't add library playlist");
     }
 
+    /* walk through and add all the items */
+    if(DB_E_SUCCESS != (result = db_pfn->db_enum_start(&pe))) {
+        DPRINTF(E_FATAL,L_DB,"Error populating initial playlist: %s\n",pe);
+        free(pe);
+        return result;
+    }
+
+    /* FIXME: assumes string return */
+    while((DB_E_SUCCESS == (result=db_pfn->db_enum_fetch(&pe, &pmo))) && pmo) {
+        /* got a row */
+        m_id = db_util_atoui32(pmo->id);
+        if(m_id) {
+            if(PL_E_SUCCESS != (result = pl_add_playlist_item(&pe, 1, m_id))) {
+                DPRINTF(E_LOG,L_DB,"Error inserting item into library: %s\n",
+                        pe);
+                free(pe);
+                db_pfn->db_enum_end(NULL);
+                return result;
+            }
+        }
+    }
+
+    db_pfn->db_enum_end(NULL);
     return DB_E_SUCCESS;
 }
 
@@ -348,10 +377,14 @@ int db_add(char **pe, MEDIA_NATIVE *pmo) {
 
     if(db_pfn->db_add) {
         db_writelock();
+        db_utf8_validate(pmo);
+        db_trim_strings(pmo);
+
         result = db_pfn->db_add(pe,pmo);
         /* FIXME: deadlock?  Do I ever acquired a db lock with the playlist
          * lock held? */
-        // pl_advise_add(pmo);
+        if(DB_E_SUCCESS == result)
+            pl_advise_add(pmo);
 
         db_unlock();
         return result;
@@ -359,39 +392,171 @@ int db_add(char **pe, MEDIA_NATIVE *pmo) {
     return DB_E_SUCCESS;
 }
 
+/**
+ * start enumerating all items, based on the specifications set up
+ * in the query.  (items, distinct, playlists, etc)
+ *
+ * If the enum_start returns an error, the lock will not be held -
+ * the caller should not call db_enum_end
+ *
+ * @param pe error string buffer
+ * @param pinfo db query to enumerate
+ * @returns DB_E_SUCCESS on success, error with pe allocated otherwise
+ */
 int db_enum_start(char **pe, DB_QUERY *pinfo) {
-    int result;
-    char *playlist;
-    uint32_t playlist_id;
+    char *e_pl;
 
-    /* there are some optimizations that can be made here, based on
-     * whether or not there is a query involved, and using playlist 1
-     * as the source of the query */
+    db_readlock();
+    pinfo->priv = (void*)malloc(sizeof(ENUMHELPER));
+    if(!pinfo->priv) {
+        db_set_error(pe,DB_E_MALLOC);
+        db_unlock();
+        return DB_E_MALLOC;
+    }
+    memset(pinfo->priv,0,sizeof(ENUMHELPER));
 
-    db_writelock();
-    db_unlock();
+    /* worry about playlists and items first */
+    switch(pinfo->query_type) {
+    case QUERY_TYPE_ITEMS:
+        /* this won't work with a query */
+        ((ENUMHELPER *)pinfo->priv)->handle = (void*)pl_enum_items_start(&e_pl, pinfo->playlist_id);
+
+        if(!((ENUMHELPER*)pinfo->priv)->handle) {
+            db_unlock();
+            db_set_error(pe,DB_E_PLAYLIST,e_pl);
+            free(e_pl);
+            free(pinfo->priv);
+            return DB_E_PLAYLIST;
+        }
+        break;
+    case QUERY_TYPE_PLAYLISTS:
+        pl_get_playlist_count(pe, &pinfo->totalcount);
+
+        ((ENUMHELPER *)pinfo->priv)->handle = (void*)pl_enum_start(&e_pl);
+
+        if(!((ENUMHELPER*)pinfo->priv)->handle) {
+            db_unlock();
+            db_set_error(pe,DB_E_PLAYLIST,e_pl);
+            free(e_pl);
+            free(pinfo->priv);
+            return DB_E_PLAYLIST;
+        }
+        break;
+    case QUERY_TYPE_DISTINCT:
+        break;
+    }
 
     return DB_E_SUCCESS;
 }
 
-int db_enum_fetch_row(char **pe, MEDIA_STRING **pmos, DB_QUERY *pquery) {
-    /* FIXME: this should really take a MEDIA_OBJECT */
-    *pmos = NULL;
+/**
+ * fetch the next media item from the database
+ *
+ * @param pe error buffer
+ * @param ppln pointer to receive media object
+ * @returns DB_E_SUCCESS on success, error code with pe allocated on failure
+ */
+int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
+    uint32_t id;
+    ENUMHELPER *peh;
+
+    ASSERT((pquery) && (pquery->priv));
+
+    if(!pquery || !pquery->priv) {
+        *result = NULL;
+        return DB_E_SUCCESS;
+    }
+
+    peh = (ENUMHELPER*)pquery->priv;
+
+    switch(pquery->query_type) {
+    case QUERY_TYPE_ITEMS:
+        if(peh->result) {
+            db_pfn->db_dispose_item((MEDIA_STRING*)peh->result);
+            peh->result = NULL;
+        }
+
+        id = pl_enum_items_fetch(NULL, peh->handle);
+
+        if(!id) {
+            *result = NULL;
+            return DB_E_SUCCESS;
+        }
+
+        /* fetch the item */
+        peh->result = (char**)db_pfn->db_fetch_item(pe, id);
+        *result = peh->result;
+        break;
+    case QUERY_TYPE_PLAYLISTS:
+        return pl_enum_fetch(pe, result, peh->handle);
+        break;
+    case QUERY_TYPE_DISTINCT:
+        *result = NULL;
+        break;
+    }
+
     return DB_E_SUCCESS;
 }
 
+
+/**
+ * finish enumeration
+ *
+ * @param pe error buffer
+ * @returns DB_E_SUCCESS on success, error code with pe allocate on failure
+ */
 int db_enum_reset(char **pe, DB_QUERY *pquery) {
+    switch(pquery->query_type) {
+    case QUERY_TYPE_ITEMS:
+        pl_enum_items_reset(pe, ((ENUMHELPER*)pquery->priv)->handle);
+        break;
+    case QUERY_TYPE_PLAYLISTS:
+        pl_enum_reset(pe, ((ENUMHELPER*)pquery->priv)->handle);
+        break;
+    case QUERY_TYPE_DISTINCT:
+        break;
+    }
     return DB_E_SUCCESS;
 }
 
-int db_enum_end(char **pe) {
+/**
+ * finish enumeration
+ *
+ * @param pe error buffer
+ * @returns DB_E_SUCCESS on success, error code with pe allocate on failure
+ */
+int db_enum_end(char **pe, DB_QUERY *pquery) {
+    ENUMHELPER *peh;
+
+    ASSERT((pquery) && (pquery->priv));
+
+    peh = (ENUMHELPER*)pquery->priv;
+
+    switch(pquery->query_type) {
+    case QUERY_TYPE_ITEMS:
+        if((pquery) && (pquery->priv)) {
+            if(peh->result) {
+                DPRINTF(E_DBG,L_PL,"Freeing last result\n");
+                free(peh->result);
+            }
+            DPRINTF(E_DBG,L_PL,"Ending playlist enumeration\n");
+            pl_enum_items_end(peh->handle);
+        }
+        break;
+    case QUERY_TYPE_PLAYLISTS:
+        if((pquery) && (pquery->priv))
+            pl_enum_end(peh->handle);
+        break;
+    case QUERY_TYPE_DISTINCT:
+        break;
+    }
+
+    DPRINTF(E_DBG,L_PL,"Freeing prive\n");
+    free(pquery->priv);
+
+    db_unlock();
     return DB_E_SUCCESS;
 }
-
-int db_scanning(void) {
-    return TRUE;
-}
-
 
 /**
  * wrapper for pl_add_playlist.  returns DB_E_SUCCESS on success,
@@ -492,24 +657,19 @@ void db_dispose_playlist(PLAYLIST_NATIVE *ppln) {
  *
  * @param pe error buffer
  * @param id media object id
- * @returns MEDIA_OBJECT* if successful, NULL otherwise
+ * @returns MEDIA_STRING* if successful, NULL otherwise
  */
 MEDIA_NATIVE *db_fetch_item(char **pe, int id) {
     MEDIA_STRING *pstring;
     MEDIA_NATIVE *pnative;
 
-    if(db_pfn->db_fetch_item_native) {
-        return db_pfn->db_fetch_item_native(pe, id);
-    }
-
-    pstring = db_pfn->db_fetch_item_string(pe, id);
+    pstring = db_pfn->db_fetch_item(pe, id);
     if(!pstring)
         return NULL;
 
     /* otherwise, convert to native format */
     pnative = db_string_to_native(pstring);
-    if(db_pfn->db_dispose_item_string)
-        db_pfn->db_dispose_item_string(pstring);
+    db_pfn->db_dispose_item(pstring);
 
     return pnative;
 }
@@ -629,27 +789,23 @@ void db_dispose_item(MEDIA_NATIVE *pmo) {
     if(!pmo)
         return;
 
-    if(db_pfn->db_dispose_item_native)
-        db_pfn->db_dispose_item_native(pmo);
-    else { /* do default */
-        MAYBEFREE(pmo->path);
-        MAYBEFREE(pmo->fname);
-        MAYBEFREE(pmo->title);
-        MAYBEFREE(pmo->artist);
-        MAYBEFREE(pmo->album);
-        MAYBEFREE(pmo->genre);
-        MAYBEFREE(pmo->comment);
-        MAYBEFREE(pmo->type);
-        MAYBEFREE(pmo->composer);
-        MAYBEFREE(pmo->orchestra);
-        MAYBEFREE(pmo->conductor);
-        MAYBEFREE(pmo->grouping);
-        MAYBEFREE(pmo->description);
-        MAYBEFREE(pmo->url);
-        MAYBEFREE(pmo->codectype);
-        MAYBEFREE(pmo->album_artist);
-        free(pmo);
-    }
+    MAYBEFREE(pmo->path);
+    MAYBEFREE(pmo->fname);
+    MAYBEFREE(pmo->title);
+    MAYBEFREE(pmo->artist);
+    MAYBEFREE(pmo->album);
+    MAYBEFREE(pmo->genre);
+    MAYBEFREE(pmo->comment);
+    MAYBEFREE(pmo->type);
+    MAYBEFREE(pmo->composer);
+    MAYBEFREE(pmo->orchestra);
+    MAYBEFREE(pmo->conductor);
+    MAYBEFREE(pmo->grouping);
+    MAYBEFREE(pmo->description);
+    MAYBEFREE(pmo->url);
+    MAYBEFREE(pmo->codectype);
+    MAYBEFREE(pmo->album_artist);
+    free(pmo);
 }
 
 /**
@@ -769,6 +925,19 @@ void db_trim_string(char *string) {
         string[strlen(string) - 1] = '\0';
 }
 
+
+/**
+ * convert a native media object to a string-based media
+ * object.  It is the caller's reponsibiliby to free the
+ * native object
+ *
+ * @param pmon native media object to convert
+ * @return media object, or NULL on error
+ */
+MEDIA_STRING *db_native_to_string(MEDIA_NATIVE *pmon) {
+    return NULL;
+}
+
 /**
  * convert a string-based media object to a native object
  * it is the caller's responsibility to free the string object
@@ -786,7 +955,7 @@ MEDIA_NATIVE *db_string_to_native(MEDIA_STRING *pmos) {
     memset(pnew,0,sizeof(MEDIA_NATIVE));
 
     DB_STR_COPY(path);
-    DB_INT32_COPY(index);
+    DB_INT32_COPY(idx);
     DB_STR_COPY(fname);
     DB_STR_COPY(title);
     DB_STR_COPY(artist);

@@ -1023,8 +1023,7 @@ void out_daap_playlistitems(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
 
     pi_log(E_DBG,"Done enumerating.\n");
 
-    pi_db_enum_end(NULL);
-    pi_db_enum_dispose(NULL,&ppi->dq);
+    pi_db_enum_end(NULL,&ppi->dq);
 
     out_daap_output_end(pwsc,ppi);
     return;
@@ -1049,23 +1048,21 @@ void out_daap_browse(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
               ppi->uri_sections[which_field],which_field);
 
     ppi->dq.query_type = QUERY_TYPE_DISTINCT;
-    ppi->dq.distinct_field = ppi->uri_sections[which_field];
-    //    which_field = 3;
 
     if(!strcmp(ppi->uri_sections[which_field],"artists")) {
         response_type = "abar";
-        ppi->dq.distinct_field = "artist";
+        ppi->dq.distinct_field = SG_ARTIST;
     } else if(!strcmp(ppi->uri_sections[which_field],"genres")) {
         response_type = "abgn";
-        ppi->dq.distinct_field = "genre";
+        ppi->dq.distinct_field = SG_GENRE;
     } else if(!strcmp(ppi->uri_sections[which_field],"albums")) {
         response_type = "abal";
-        ppi->dq.distinct_field = "album";
+        ppi->dq.distinct_field = SG_ALBUM;
     } else if(!strcmp(ppi->uri_sections[which_field],"composers")) {
         response_type = "abcp";
-        ppi->dq.distinct_field = "composer";
+        ppi->dq.distinct_field = SG_COMPOSER;
     } else {
-        pi_log(E_WARN,"Invalid browse request type %s\n",ppi->uri_sections[3]);
+        pi_log(E_WARN,"Invalid browse request type %s\n",ppi->uri_sections[which_field]);
         out_daap_error(pwsc,ppi,"abro","Invalid browse type");
         pi_config_set_status(pwsc,ppi->session_id,NULL);
         return;
@@ -1109,8 +1106,7 @@ void out_daap_browse(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
 
     pi_log(E_DBG,"Done enumerating\n");
 
-    pi_db_enum_end(NULL);
-    pi_db_enum_dispose(NULL,&ppi->dq);
+    pi_db_enum_end(NULL, &ppi->dq);
 
     out_daap_output_end(pwsc,ppi);
     return;
@@ -1179,8 +1175,7 @@ void out_daap_playlists(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
 
     pi_log(E_DBG,"Done enumerating.\n");
 
-    pi_db_enum_end(NULL);
-    pi_db_enum_dispose(NULL,&ppi->dq);
+    pi_db_enum_end(NULL,&ppi->dq);
 
     out_daap_output_end(pwsc,ppi);
     return;
@@ -1243,8 +1238,7 @@ void out_daap_items(WS_CONNINFO *pwsc, PRIVINFO *ppi) {
         free(block);
     }
     pi_log(E_DBG,"Done enumerating.\n");
-    pi_db_enum_end(NULL);
-    pi_db_enum_dispose(NULL,&ppi->dq);
+    pi_db_enum_end(NULL,&ppi->dq);
     out_daap_output_end(pwsc,ppi);
     return;
 }

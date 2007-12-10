@@ -66,19 +66,20 @@
 static pthread_mutex_t db_sqlite2_mutex = PTHREAD_MUTEX_INITIALIZER; /**< sqlite not reentrant */
 static sqlite_vm *db_sqlite2_pvm;
 static pthread_key_t db_sqlite2_key;
-
 static char db_sqlite2_path[PATH_MAX + 1];
+extern char *db_sqlite2_initial;
 
-#define DB_SQLITE2_VERSION 13
+#define DB_SQLITE2_VERSION 14
 
 
 /* Forwards */
 static void db_sqlite2_lock(void);
 static void db_sqlite2_unlock(void);
-extern char *db_sqlite2_initial;
 static int db_sqlite2_enum_begin_helper(char **pe);
 static int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...);
 static int db_sqlite2_insert_id(void);
+static int db_sqlite2_fetch_row(char **pe, char ***row, char *fmt, ...);
+static void db_sqlite2_dispose_row(char **row);
 
 /**
  * insert a media object into the database
@@ -92,6 +93,7 @@ int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
     char *term;
     int field,pass;
     int offset;
+    int err;
 
     if(pmo->id) {
         /* update query */
@@ -106,7 +108,7 @@ int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
                                      (field == (SG_LAST - 1)) ? ' ' : ',');
                 break;
             case FT_INT64:
-                sql = util_aasprintf(sql,"%s = %ll%c ",ff_field_data[field].name,
+                sql = util_aasprintf(sql,"%s = %llu%c ",ff_field_data[field].name,
                                      *((uint64_t*)(((void*)pmo)+offset)),
                                      (field == (SG_LAST - 1)) ? ' ' : ',');
                 break;
@@ -140,7 +142,7 @@ int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
                                              (field == (SG_LAST - 1)) ? ')' : ',');
                         break;
                     case FT_INT64:
-                        sql = util_aasprintf(sql,"%ll%c ",
+                        sql = util_aasprintf(sql,"%llu%c ",
                                              *((uint64_t*)(((void*)pmo)+offset)),
                                              (field == (SG_LAST - 1)) ? ')' : ',');
                         break;
@@ -162,9 +164,11 @@ int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
         }
     }
 
-    DPRINTF(E_DBG,L_DB,"Executing sql: %s\n",sql);
+    if(DB_E_SUCCESS == (err = db_sqlite2_exec(pe, E_FATAL, "%s", sql))) {
+        pmo->id = (uint32_t)db_sqlite2_insert_id();
+    }
 
-    return DB_E_SUCCESS;
+    return err;
 }
 
 /**
@@ -257,6 +261,84 @@ int db_sqlite2_db_version(void) {
 }
 
 /**
+ * @param pe error buffer
+ * @param ppmo returns the result
+ * @return DB_E_SUCCESS on success, error code with pe allocated otherwise
+ */
+MEDIA_STRING *db_sqlite2_fetch_item(char **pe, uint32_t id) {
+    char **row = NULL;
+    int err;
+
+    DPRINTF(E_DBG,L_DB,"Fetching db item %d\n",id);
+    if(DB_E_SUCCESS != (err = db_sqlite2_fetch_row(pe, &row, "select * from songs where id=%d",id)))
+        return NULL;
+
+    DPRINTF(E_DBG,L_DB,"Got %s\n",((MEDIA_STRING*)row)->title);
+    return (MEDIA_STRING *)row;
+}
+
+int db_sqlite2_fetch_row(char **pe, char ***result, char *fmt, ...) {
+    va_list ap;
+    char *query;
+    char **table;
+    int err;
+    char *perr;
+    int nrow, ncolumn;
+
+    va_start(ap,fmt);
+    query=sqlite_vmprintf(fmt,ap);
+    va_end(ap);
+
+    db_sqlite2_lock();
+    err = sqlite_get_table(db_sqlite2_handle(), query, &table,
+                           &nrow, &ncolumn, &perr);
+    if(err != SQLITE_OK) {
+        db_sqlite2_set_error(pe, DB_E_SQL_ERROR, perr);
+        DPRINTF(E_FATAL,L_DB,"Query: %s FAILED; %s\n",
+                query, perr);
+        db_sqlite2_unlock();
+    }
+
+    if(!nrow) {
+        DPRINTF(E_DBG,L_DB,"NULL fetch result: %x\n",*result);
+        sqlite_free_table(table);
+        *result = NULL;
+    } else {
+        *result = &table[ncolumn];
+    }
+
+    if(ncolumn != SG_LAST) {
+        DPRINTF(E_FATAL,L_DB,"Expecting row size to be %d, was %d\n",SG_LAST, ncolumn);
+    }
+
+    sqlite_freemem(query);
+    db_sqlite2_unlock();
+
+    return DB_E_SUCCESS;
+}
+
+
+/**
+ * dispose of a row fetched via db_sqlite2_fetch
+ *
+ * @param ppms media object to destroy
+ */
+void db_sqlite2_dispose_item(MEDIA_STRING *ppms) {
+    char **table = (char **)ppms;
+
+    /* sqlite with the stupid column of headers */
+    table -= SG_LAST;
+    db_sqlite2_dispose_row(table);
+}
+
+void db_sqlite2_dispose_row(char **row) {
+    if(row)
+        sqlite_free_table(row);
+}
+
+
+
+/**
  * open a sqlite2 database
  *
  * @param dsn the full dns to the database
@@ -284,6 +366,7 @@ int db_sqlite2_open(char **pe, char *dsn) {
     sqlite_close(pdb);
     db_sqlite2_unlock();
 
+    db_sqlite2_exec(NULL,E_DBG,"pragma empty_result_callback 0");
     if(db_sqlite2_db_version() != DB_SQLITE2_VERSION) {
         /* got to rescan */
         db_sqlite2_exec(NULL,E_DBG,"drop table songs");
@@ -344,10 +427,9 @@ int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...) {
 }
 
 /**
- * start enumerating rows in a select
+ * walk a bunch of rows for a specific query
  */
 int db_sqlite2_enum_begin(char **pe) {
-    db_sqlite2_lock();
     return db_sqlite2_enum_begin_helper(pe);
 }
 
@@ -356,10 +438,8 @@ int db_sqlite2_enum_begin_helper(char **pe) {
     char *perr;
     const char *ptail;
 
-    DPRINTF(E_DBG,L_DB,"Executing: select * from songs\n");
     err=sqlite_compile(db_sqlite2_handle(),"select * from songs",
                        &ptail,&db_sqlite2_pvm,&perr);
-
     if(err != SQLITE_OK) {
         db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
         sqlite_freemem(perr);
@@ -382,13 +462,13 @@ int db_sqlite2_enum_begin_helper(char **pe) {
  *          DB_E_SUCCESS with a valid row when more data,
  *          DB_E_* on error
  */
-int db_sqlite2_enum_fetch(char **pe, MEDIA_STRING **ppmo) {
+int db_sqlite2_enum_fetch(char **pe, MEDIA_STRING **ppms) {
     int err;
     char *perr=NULL;
     const char **colarray;
     int cols;
     int counter=10;
-    const char ***pr = (const char ***)ppmo;
+    const char ***pr = (const char ***)ppms;
 
     while(counter--) {
         err=sqlite_step(db_sqlite2_pvm,&cols,(const char ***)pr,&colarray);
@@ -481,15 +561,13 @@ char *db_sqlite2_initial =
 "   time_added      INTEGER DEFAULT 0,\n"               /* 30 */
 "   time_modified   INTEGER DEFAULT 0,\n"
 "   time_played     INTEGER DEFAULT 0,\n"
-"   db_timestamp    INTEGER DEFAULT 0,\n"
 "   disabled        INTEGER DEFAULT 0,\n"
-"   sample_count    INTEGER DEFAULT 0,\n"               /* 35 */
-"   force_update    INTEGER DEFAULT 0,\n"
-"   codectype       VARCHAR(5) DEFAULT NULL,\n"
+"   sample_count    INTEGER DEFAULT 0,\n"
+"   codectype       VARCHAR(5) DEFAULT NULL,\n"         /* 35 */
 "   idx             INTEGER NOT NULL,\n"
 "   has_video       INTEGER DEFAULT 0,\n"
-"   contentrating   INTEGER DEFAULT 0,\n"                /* 40 */
+"   contentrating   INTEGER DEFAULT 0,\n"
 "   bits_per_sample INTEGER DEFAULT 0,\n"
-"   album_artist    VARCHAR(1024)\n"
+"   album_artist    VARCHAR(1024)\n"                    /* 40 */
 ");\n";
 

@@ -56,6 +56,14 @@ typedef struct playlist_t {
     struct rbtree *prb;
 } PLAYLIST;
 
+struct plenumhandle_t {
+    PLAYLIST *ppl;
+    int nextop;
+    void *last_value;
+};
+
+#define MAYBEFREE(a) if((a)) free((a))
+
 /** Globals */
 static PLAYLIST pl_list = { NULL, NULL, NULL, NULL };
 uint64_t pl_id = 1;     // First playlist to be created will be the library
@@ -78,6 +86,7 @@ char *pl_error_list[] = {
 static void pl_set_error(char **pe, int error, ...);
 static void pl_purge(PLAYLIST *ppl);
 static int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid);
+static int pl_contains_item(uint32_t pl_id, uint32_t song_id);
 
 /**
  * push error text into the error buffer passed by the calling function
@@ -114,11 +123,12 @@ int pl_compare(const void *v1, const void *v2, const void *vso) {
     SORTORDER *ps = (SORTORDER *)vso;
     int id1 = *((int*)v1);
     int id2 = *((int*)v2);
-
-    MEDIA_NATIVE *p1 = (MEDIA_NATIVE *)v1;
-    MEDIA_NATIVE *p2 = (MEDIA_NATIVE *)v2;
+    MEDIA_NATIVE *p1;
+    MEDIA_NATIVE *p2;
 
     int result = 1; // default - return in insert order
+
+    DPRINTF(E_DBG,L_PL,"Comparing %d and %d\n",id1, id2);
 
     /* FIXME: look these things up from a LRU cache based on tree depth */
     p1 = db_fetch_item(NULL, id1);
@@ -160,9 +170,9 @@ int pl_compare(const void *v1, const void *v2, const void *vso) {
  */
 int pl_update_smart(char **pe, PLAYLIST *ppl) {
     DB_QUERY dbq;
-    MEDIAOBJECT pmo;
+    MEDIA_STRING *pms;
     int err;
-    int song_id;
+    uint32_t song_id;
     char *e_db;
 
     ASSERT((ppl) && (ppl->ppln) && (ppl->ppln->type == PL_SMART));
@@ -182,38 +192,40 @@ int pl_update_smart(char **pe, PLAYLIST *ppl) {
     dbq.limit = INT_MAX;
     dbq.playlist_id = 1;
 
-    if((err=db_enum_start(&e_db,&dbq)) != 0) {
+    if((err=db_enum_start(&e_db,&dbq)) != DB_E_SUCCESS) {
+        DPRINTF(E_LOG,L_PL,"Enum start error: %s\n",e_db);
         pl_set_error(pe,PL_E_DBERROR,e_db);
         if(e_db) free(e_db);
-        db_enum_end(NULL);
         return PL_E_DBERROR;
     }
 
     /* now fetch each and see if it applies to this playlist */
-    pmo.kind = OBJECT_TYPE_STRING;
-    while((DB_E_SUCCESS == (err = db_enum_fetch_row(&e_db, &pmo.pmstring, &dbq))) && (&pmo.pmstring)) {
-        /* FIXME: this is half ready for native media objects */
-        pmo.kind = OBJECT_TYPE_STRING;
+    DPRINTF(E_DBG,L_PL,"Walking database...\n");
+    while((DB_E_SUCCESS == (err = db_enum_fetch(&e_db, (char ***)&pms, &dbq))) && (pms)) {
+        song_id = strtoul(pms->id,NULL,10);
 
-        if(pmo.kind == OBJECT_TYPE_STRING)
-            song_id = atoi(pmo.pmstring->id);
-        else
-            song_id = pmo.pmnative->id;
+        DPRINTF(E_DBG,L_PL,"Checking %s\n",pms->title);
 
-        if(sp_matches(ppl->pt, &pmo)) {
-            if(PL_E_SUCCESS != (err = pl_add_playlist_item_nolock(pe, ppl->ppln->id, song_id)))
+        if(sp_matches_string(ppl->pt, pms)) {
+            DPRINTF(E_DBG,L_PL,"Matches!\n");
+            if(PL_E_SUCCESS != (err = pl_add_playlist_item(pe, ppl->ppln->id, song_id))) {
+                DPRINTF(E_DBG,L_PL,"can't add item to playlist\n");
+                db_enum_end(NULL,&dbq);
                 return err;
+            }
         }
     }
 
-    db_enum_end(NULL);
+    db_enum_end(NULL,&dbq);
 
     if(err != DB_E_SUCCESS) {
         pl_set_error(pe,PL_E_DBERROR,e_db);
+        DPRINTF(E_LOG,L_PL,"DB Error updating smart playlist: %s\n",e_db);
         free(e_db);
         return PL_E_DBERROR;
     }
 
+    DPRINTF(E_DBG,L_PL,"Updated smart playlist\n");
     return PL_E_SUCCESS;
 }
 
@@ -237,7 +249,9 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
     char *e_db;
 
     ASSERT(name);
-    ASSERT((type != PL_SMART) || (query))
+    ASSERT((type != PL_SMART) || (query));
+
+    DPRINTF(E_DBG,L_PL,"Adding playlist %s\n",name);
 
     if((!name) || (!strlen(name))) {
         pl_set_error(pe, PL_E_NONAME);
@@ -272,14 +286,14 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
         }
     }
 
-    util_mutex_lock(l_pl);
+    //util_mutex_lock(l_pl);
 
     /* maybe check for duplicates? */
 #ifdef PL_NO_DUPS
     pcurrent = pl_list.next;
     while(pcurrent) {
         if(0 == strcasecmp(name, pcurrent->ppln->title)) {
-            util_mutex_unlock(l_pl);
+            //util_mutex_unlock(l_pl);
             if(pt) sp_dispose(pt);
             pl_set_error(pe,PL_E_NAMEDUP);
             return PL_E_NAMEDUP;
@@ -296,7 +310,7 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
     if((!pnew) || (!ppln)) {
         if(pnew) free(pnew);
         if(ppln) free(ppln);
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         if(pt) sp_dispose(pt);
         pl_set_error(pe,PL_E_MALLOC);
         return PL_E_MALLOC;
@@ -308,7 +322,7 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
         if(pnew) free(pnew);
         if(ppln) free(ppln);
         if(pt) sp_dispose(pt);
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         pl_set_error(pe,PL_E_RBTREE);
         return PL_E_RBTREE;
     }
@@ -324,7 +338,7 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
 
     if((PL_STATICFILE == type) || (PL_STATICXML == type)) {
         ppln->path = path;
-        ppln->index = index;
+        ppln->idx = index;
     }
 
     ppln->id = pl_id++;
@@ -340,21 +354,25 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
     while(pcurrent->next)
         pcurrent = pcurrent->next;
 
+    pcurrent->next = pnew;
+    pnew->next = NULL;
+
     if(PL_SMART == type) {
-        if(!pl_update_smart(&e_db,pnew)) {
+        DPRINTF(E_DBG,L_PL,"Updating smart playlist\n");
+        if(PL_E_SUCCESS != pl_update_smart(&e_db,pnew)) {
             pl_set_error(pe,PL_E_DBERROR,e_db);
             free(e_db);
             sp_dispose(pt);
+            pcurrent->next = NULL;
             free(pnew);
-            util_mutex_unlock(l_pl);
+            //util_mutex_unlock(l_pl);
             return PL_E_DBERROR;
         }
     }
 
-    pcurrent->next = pnew;
-    pnew->next = NULL;
+    DPRINTF(E_DBG,L_PL,"Added playlist as %d\n",ppln->id);
 
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
     return PL_E_SUCCESS;
 }
 
@@ -374,6 +392,8 @@ void pl_purge(PLAYLIST *ppl) {
 
     if((!ppl) || (!ppl->prb))
         return;
+
+    DPRINTF(E_DBG,L_PL,"Purging playlist %s\n",ppl->ppln->title);
 
     ptr = rblookup(RB_LUFIRST,NULL,ppl->prb);
     while(ptr) {
@@ -412,9 +432,11 @@ PLAYLIST *pl_find(uint32_t id) {
 int pl_add_playlist_item(char **pe, uint32_t playlistid, uint32_t songid) {
     int result;
 
-    util_mutex_lock(l_pl);
+    DPRINTF(E_DBG,L_PL,"Adding item %d to playlist %d\n",songid, playlistid);
+
+    //util_mutex_lock(l_pl);
     result = pl_add_playlist_item_nolock(pe, playlistid, songid);
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
 
     return result;
 }
@@ -434,20 +456,16 @@ int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid)
     const void *val;
 
     if(NULL == (plcurrent = pl_find(playlistid))) {
+        DPRINTF(E_DBG,L_PL,"Can't find playlist in add_item\n");
         pl_set_error(pe,PL_E_NOTFOUND,playlistid);
         return PL_E_NOTFOUND;
-    }
-
-    /* got it, now add the song id */
-    if(plcurrent->ppln->type == PL_SMART) {
-        pl_set_error(pe,PL_E_STATICONLY);
-        return PL_E_STATICONLY;
     }
 
     /* make sure it's a valid song id */
     /* FIXME: replace this with a db_exists type function */
     pmn = db_fetch_item(NULL,songid);
     if(!pmn) {
+        DPRINTF(E_DBG,L_PL,"Can't find song in add_item\n");
         pl_set_error(pe,PL_E_BADSONGID,songid);
         return PL_E_BADSONGID;
     }
@@ -464,9 +482,17 @@ int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid)
         return PL_E_MALLOC;
     }
 
+    *pid = songid;
+
     val = rbsearch((const void*)pid, plcurrent->prb);
-    if(!val)
+    if(!val) {
         DPRINTF(E_FATAL,L_SCAN,"redblack tree insert error\n");
+        pl_set_error(pe,PL_E_RBTREE);
+        return PL_E_RBTREE;
+    }
+
+    plcurrent->ppln->items++;
+    DPRINTF(E_DBG,L_PL,"New playlist size: %d\n",plcurrent->ppln->items);
 
     return PL_E_SUCCESS;
 }
@@ -494,13 +520,13 @@ int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query) {
         return PL_E_BADPLID;
     }
 
-    util_mutex_lock(l_pl);
+    //util_mutex_lock(l_pl);
 
     /* find the playlist by id */
     ppl = pl_find(id);
     if(!ppl) {
         pl_set_error(pe, PL_E_NOTFOUND, id);
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         return PL_E_NOTFOUND;
     }
 
@@ -509,7 +535,7 @@ int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query) {
         ppt_new = sp_init();
         if(!ppt_new) {
             pl_set_error(pe, PL_E_MALLOC);
-            util_mutex_unlock(l_pl);
+            //util_mutex_unlock(l_pl);
             return PL_E_MALLOC;
         }
 
@@ -517,7 +543,7 @@ int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query) {
             pl_set_error(pe, PL_E_QUERY,sp_get_error(ppt_new));
             DPRINTF(E_LOG,L_PL,"Error parsing playlist: %s\n",sp_get_error(ppt_new));
             sp_dispose(ppt_new);
-            util_mutex_unlock(l_pl);
+            //util_mutex_unlock(l_pl);
             return PL_E_QUERY;
         }
 
@@ -526,7 +552,7 @@ int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query) {
 
         /* now, repopulate the playlist */
         if(PL_E_SUCCESS != (ecode = pl_update_smart(pe, ppl))) {
-            util_mutex_unlock(l_pl);
+            //util_mutex_unlock(l_pl);
             return ecode;
         }
     }
@@ -537,7 +563,7 @@ int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query) {
         ppl->ppln->title = strdup(name);
     }
 
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
     return PL_E_SUCCESS;
 }
 
@@ -551,7 +577,7 @@ int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query) {
 int pl_delete_playlist(char **pe, uint32_t playlistid) {
     PLAYLIST *ppl, *ppl_prev;
 
-    util_mutex_lock(l_pl);
+    //util_mutex_lock(l_pl);
 
     ppl_prev = &pl_list;
     ppl = ppl_prev->next;
@@ -568,7 +594,7 @@ int pl_delete_playlist(char **pe, uint32_t playlistid) {
     }
 
     if(!ppl) {
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         pl_set_error(pe,PL_E_NOTFOUND,playlistid);
         return PL_E_NOTFOUND;
     }
@@ -588,7 +614,7 @@ int pl_delete_playlist(char **pe, uint32_t playlistid) {
     ppl_prev->next = ppl->next;
     free(ppl);
 
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
     return PL_E_SUCCESS;
 }
 
@@ -611,26 +637,26 @@ int pl_delete_playlist_item(char **pe, uint32_t playlistid, uint32_t songid) {
         return PL_E_BADPLID;
     }
 
-    util_mutex_lock(l_pl);
+    //util_mutex_lock(l_pl);
 
     /* find the playlist by id */
     ppl = pl_find(playlistid);
     if(!ppl) {
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         pl_set_error(pe, PL_E_NOTFOUND, playlistid);
         return PL_E_NOTFOUND;
     }
 
     pid = (uint32_t*)rbdelete((void*)&songid,ppl->prb);
     if(!pid) {
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         pl_set_error(pe,PL_E_BADSONGID,songid);
         return PL_E_BADSONGID;
     }
 
     ppl->ppln->items--;
 
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
     return PL_E_SUCCESS;
 }
 
@@ -647,14 +673,14 @@ int pl_get_playlist_count(char **pe, int *count) {
     PLAYLIST *ppl = pl_list.next;
     int result = 0;
 
-    util_mutex_lock(l_pl);
+    //util_mutex_lock(l_pl);
 
     while(ppl) {
         result++;
         ppl = ppl->next;
     }
 
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
 
     *count = result;
     return PL_E_SUCCESS;
@@ -671,9 +697,9 @@ PLAYLIST_NATIVE *pl_fetch_playlist_id(char **pe, uint32_t id) {
     PLAYLIST *ppl;
     PLAYLIST_NATIVE *pnew;
 
-    util_mutex_lock(l_pl);
+    //util_mutex_lock(l_pl);
     if(NULL == (ppl = pl_find(id))) {
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         pl_set_error(pe,PL_E_NOTFOUND,id);
         return NULL;
     }
@@ -682,7 +708,7 @@ PLAYLIST_NATIVE *pl_fetch_playlist_id(char **pe, uint32_t id) {
     if(!pnew) {
         DPRINTF(E_FATAL,L_PL,"pl_fetch_playlist: malloc\n");
         pl_set_error(pe, PL_E_MALLOC);
-        util_mutex_unlock(l_pl);
+        //util_mutex_unlock(l_pl);
         return NULL;
     }
 
@@ -691,7 +717,7 @@ PLAYLIST_NATIVE *pl_fetch_playlist_id(char **pe, uint32_t id) {
     if(ppl->ppln->query) pnew->query = strdup(ppl->ppln->query);
     if(ppl->ppln->path) pnew->path = strdup(ppl->ppln->path);
 
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
     return pnew;
 }
 
@@ -713,18 +739,18 @@ PLAYLIST_NATIVE *pl_fetch_playlist(char **pe, char *path, uint32_t index) {
     if(!path)
         return NULL;
 
-    util_mutex_lock(l_pl);
+    //util_mutex_lock(l_pl);
 
     while(ppl) {
         if(!ppl->ppln)
             DPRINTF(E_FATAL,L_PL,"pl_fetch_playlist: no native playlist\n");
 
         if(ppl->ppln->path && (0 == strcasecmp(ppl->ppln->path,path))) {
-            if(ppl->ppln->index == index) {
+            if(ppl->ppln->idx == index) {
                 pnew = (PLAYLIST_NATIVE*)malloc(sizeof(PLAYLIST_NATIVE));
                 if(!pnew) {
                     DPRINTF(E_FATAL,L_PL,"pl_fetch_playlist: malloc\n");
-                    util_mutex_unlock(l_pl);
+                    //util_mutex_unlock(l_pl);
                     pl_set_error(pe, PL_E_MALLOC);
                     return NULL;
                 }
@@ -734,14 +760,14 @@ PLAYLIST_NATIVE *pl_fetch_playlist(char **pe, char *path, uint32_t index) {
                 if(ppl->ppln->query) pnew->query = strdup(ppl->ppln->query);
                 if(ppl->ppln->path) pnew->path = strdup(ppl->ppln->path);
 
-                util_mutex_unlock(l_pl);
+                //util_mutex_unlock(l_pl);
                 return pnew;
             }
         }
         ppl = ppl->next;
     }
 
-    util_mutex_unlock(l_pl);
+    //util_mutex_unlock(l_pl);
     return NULL;
 }
 
@@ -756,4 +782,234 @@ void pl_dispose_playlist(PLAYLIST_NATIVE *ppln) {
     if(ppln->path) free(ppln->path);
 
     free(ppln);
+}
+
+/**
+ * walk a playlist.  This assumes that a readlock
+ * is held
+ */
+PLENUMHANDLE pl_enum_items_start(char **pe, uint32_t playlist_id) {
+    PLENUMHANDLE pleh;
+    PLAYLIST *ppl;
+
+    ppl = pl_find(playlist_id);
+    if(!ppl) {
+        DPRINTF(E_DBG,L_PL,"Can't find plid %d\n",playlist_id);
+        pl_set_error(pe,PL_E_NOTFOUND,playlist_id);
+        return NULL;
+    }
+
+    pleh = (PLENUMHANDLE)malloc(sizeof(struct plenumhandle_t));
+    if(!pleh) {
+        pl_set_error(pe,PL_E_MALLOC);
+        return NULL;
+    }
+
+    pleh->ppl = ppl;
+    pleh->nextop = RB_LUFIRST;
+    pleh->last_value = NULL;
+
+    return pleh;
+}
+
+int pl_enum_items_reset(char **pe, PLENUMHANDLE pleh) {
+    pleh->nextop = RB_LUFIRST;
+    pleh->last_value = NULL;
+    return PL_E_SUCCESS;
+}
+
+uint32_t pl_enum_items_fetch(char **pe, PLENUMHANDLE pleh) {
+    uint32_t *ptr;
+
+    ptr = (uint32_t *)rblookup(pleh->nextop, pleh->last_value, pleh->ppl->prb);
+    pleh->nextop = RB_LUNEXT;
+    pleh->last_value = ptr;
+
+    if(!ptr)
+        return 0;
+
+    return *(uint32_t*)ptr;
+}
+
+void pl_enum_items_end(PLENUMHANDLE hple) {
+    free(hple);
+}
+
+
+/**
+ * enumerate playlists
+ *
+ * @param pe error buffer
+ * @returns enumeration handle, or null on error
+ */
+PLENUMHANDLE pl_enum_start(char **pe) {
+    PLENUMHANDLE pleh;
+
+    DPRINTF(E_DBG,L_PL,"Enumerating playlists\n");
+    /* readlock must be set by calling function */
+
+    pleh = (PLENUMHANDLE)malloc(sizeof(struct plenumhandle_t));
+    memset(pleh,0,sizeof(struct plenumhandle_t));
+
+    pleh->ppl = &pl_list;
+    pleh->last_value = (PLAYLIST_STRING*)malloc(sizeof(PLAYLIST_STRING));
+
+    if(!pleh->last_value) {
+        free(pleh);
+        return NULL;
+    }
+
+    memset(pleh->last_value,0,sizeof(PLAYLIST_STRING));
+    return pleh;
+}
+
+/**
+ * reset enumeration
+ *
+ * @param pe error buffer
+ * @param pleh enumeration handle, as retrived by enum_start
+ * @returns PL_E_SUCCESS on success
+ */
+int pl_enum_reset(char **pe, PLENUMHANDLE pleh) {
+    ASSERT(pleh);
+
+    if(!pleh)
+        return PL_E_SUCCESS;
+
+    pleh->ppl = &pl_list;
+    return PL_E_SUCCESS;
+}
+
+/**
+ * fetch the next playlist
+ *
+ * @param pe error buffer
+ * @param pleh enumeration handle, as retrieved by enum_start
+ * @returns DB_E_SUCCESS on success, error string
+ */
+int pl_enum_fetch(char **pe, char ***result, PLENUMHANDLE pleh) {
+    PLAYLIST_STRING *ppls;
+
+    DPRINTF(E_DBG,L_PL,"Fetching next playlist\n");
+
+    if(!pleh)
+        return PL_E_SUCCESS;
+
+    ppls = (PLAYLIST_STRING*) pleh->last_value;
+
+    if(ppls) {
+        MAYBEFREE(ppls->id);
+        MAYBEFREE(ppls->title);
+        MAYBEFREE(ppls->type);
+        MAYBEFREE(ppls->items);
+        MAYBEFREE(ppls->query);
+        MAYBEFREE(ppls->db_timestamp);
+        MAYBEFREE(ppls->path);
+        MAYBEFREE(ppls->idx);
+    }
+
+    pleh->ppl = pleh->ppl->next;
+    if(!pleh->ppl) {
+        *result = NULL;
+        memset(ppls,0,sizeof(PLAYLIST_STRING));
+        return PL_E_SUCCESS;
+    }
+
+    /* yuck */
+    ppls->id = util_asprintf("%d",pleh->ppl->ppln->id);
+    ppls->type = util_asprintf("%d",pleh->ppl->ppln->type);
+    ppls->items = util_asprintf("%d",pleh->ppl->ppln->items);
+    ppls->db_timestamp = util_asprintf("%d",pleh->ppl->ppln->db_timestamp);
+    ppls->idx = util_asprintf("%d",pleh->ppl->ppln->idx);
+
+    if(pleh->ppl->ppln->title)
+        ppls->title = strdup(pleh->ppl->ppln->title);
+    if(pleh->ppl->ppln->query)
+        ppls->query = strdup(pleh->ppl->ppln->query);
+    if(pleh->ppl->ppln->path)
+        ppls->path = strdup(pleh->ppl->ppln->path);
+
+    *result = (char**)ppls;
+
+    return PL_E_SUCCESS;
+}
+
+/**
+ * finish enumerating plalists
+ *
+ * @param pleh enumeration handle, from enum_start
+ */
+void pl_enum_end(PLENUMHANDLE pleh) {
+    PLAYLIST_STRING *ppls;
+
+    if(!pleh)
+        return;
+
+    ppls = (PLAYLIST_STRING*) pleh->last_value;
+
+    if(ppls) {
+        MAYBEFREE(ppls->id);
+        MAYBEFREE(ppls->title);
+        MAYBEFREE(ppls->type);
+        MAYBEFREE(ppls->items);
+        MAYBEFREE(ppls->query);
+        MAYBEFREE(ppls->db_timestamp);
+        MAYBEFREE(ppls->path);
+        MAYBEFREE(ppls->idx);
+
+        free(ppls);
+    }
+
+    free(pleh);
+}
+
+
+/**
+ * see if an item is in a specific playlist
+ *
+ * @param pl_id playlist to check
+ * @param song_id id of song to check for
+ * @return TRUE or FALSE
+ */
+int pl_contains_item(uint32_t pl_id, uint32_t song_id) {
+    PLAYLIST *ppl;
+
+    if(!(ppl = pl_find(pl_id)))
+        return FALSE;
+
+    if(rbfind((void*)&song_id,ppl->prb))
+        return TRUE;
+
+    return FALSE;
+}
+
+/**
+ * when the database gets asked to add a new media object,
+ * it lets us know that it did, that way we can update smart
+ * playlists, the in-memory db cache, and whatnot
+ *
+ * @param pmn new entry added (or updated)
+ */
+void pl_advise_add(MEDIA_NATIVE *pmn) {
+    PLAYLIST *ppl;
+    int is_edit = FALSE;
+
+    /* this can be an add or an update... if it's an add, it won't already
+     * be in playlist 1
+     */
+
+    if(pl_contains_item(1, pmn->id)) {
+        is_edit = TRUE;
+    }
+
+    ppl = pl_list.next;
+
+    /* walk through all the playlists, adding them if necessary */
+    while(ppl) {
+        if((1 == ppl->ppln->id) ||
+           ((PL_SMART == ppl->ppln->type) &&
+            (sp_matches_native(ppl->pt, pmn))))
+            pl_add_playlist_item(NULL, 1, pmn->id);
+        ppl = ppl->next;
+    }
 }

@@ -34,6 +34,9 @@ extern int db_sqlite2_enum_begin(char **pe);
 extern int db_sqlite2_enum_fetch(char **pe, MEDIA_STRING **ppmo);
 extern int db_sqlite2_enum_end(char **pe);
 extern int db_sqlite2_enum_restart(char **pe);
+extern MEDIA_STRING *db_sqlite2_fetch_item(char **pe, uint32_t id);
+extern void db_sqlite2_dispose_item(MEDIA_STRING *ppms);
+
 
 #endif /* _DB_SQL_SQLITE2_ */
 

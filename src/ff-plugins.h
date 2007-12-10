@@ -118,11 +118,11 @@ extern EXPORT void pi_log(int, char *, ...);
 extern EXPORT int pi_should_transcode(struct tag_ws_conninfo *, char *);
 
 /* db functions */
-extern EXPORT int pi_db_enum_start(char **, DB_QUERY *);
-extern EXPORT int pi_db_enum_fetch_row(char **, char ***, DB_QUERY *);
-extern EXPORT int pi_db_enum_end(char **);
-extern EXPORT int pi_db_enum_restart(char **, DB_QUERY *);
-extern EXPORT void pi_db_enum_dispose(char **, DB_QUERY*);
+extern EXPORT int pi_db_enum_start(char **pe, DB_QUERY *pinfo);
+extern EXPORT int pi_db_enum_fetch_row(char **pe, char ***result, DB_QUERY *pinfo);
+extern EXPORT int pi_db_enum_end(char **pe, DB_QUERY *pinfo);
+extern EXPORT int pi_db_enum_restart(char **pe, DB_QUERY *pinfo);
+
 extern EXPORT void pi_stream(struct tag_ws_conninfo *, char *);
 
 extern EXPORT int pi_db_add_playlist(char **pe, char *name, int type, char *clause, char *path, int index, uint32_t *playlistid);

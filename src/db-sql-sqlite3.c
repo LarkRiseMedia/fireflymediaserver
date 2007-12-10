@@ -96,7 +96,7 @@ sqlite3 *db_sqlite3_handle(void) {
     if(pdb == NULL) { /* don't have a handle yet */
         DPRINTF(E_DBG,L_DB,"Creating new db handle\n");
         if(sqlite3_open(db_sqlite3_path,&pdb) != SQLITE_OK) {
-            db_sqlite2_set_error(&pe,DB_E_SQL_ERROR,sqlite3_errmsg(pdb));
+            db_sqlite3_set_error(&pe,DB_E_SQL_ERROR,sqlite3_errmsg(pdb));
             DPRINTF(E_FATAL,L_DB,"db_sqlite3_open: %s (%s)\n",pe,db_sqlite3_path);
             db_sqlite3_unlock();
             return NULL;

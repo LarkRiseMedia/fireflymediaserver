@@ -34,10 +34,12 @@ extern int db_revision(void);
 
 extern int db_add(char **pe, MEDIA_NATIVE *pmo);
 
+/* enumerate db items (songs) */
 extern int db_enum_start(char **pe, DB_QUERY *pquery);
-extern int db_enum_fetch_row(char **pe, MEDIA_STRING **pmos, DB_QUERY *pquery); /* FIXME: should return mediaobject */
+/* this is either a distinct, a playlist, or a media string */
+extern int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery);
 extern int db_enum_reset(char **pe, DB_QUERY *pquery);
-extern int db_enum_end(char **pe);
+extern int db_enum_end(char **pe, DB_QUERY *pquery);
 
 /* playlist functions */
 extern int db_add_playlist(char **pe, char *name, int type, char *clause, char *path, int index, uint32_t *playlistid);

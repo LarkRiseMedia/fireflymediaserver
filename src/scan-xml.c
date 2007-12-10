@@ -756,7 +756,7 @@ int scan_xml_tracks_section(int action, char *info) {
                 pmp3->item_kind = 2;
 
                 pmp3->path = strdup(scan_xml_file);
-                pmp3->index = current_track_id;
+                pmp3->idx = current_track_id;
 
                 MAYBECOPYSTRING(title);
                 MAYBECOPYSTRING(artist);

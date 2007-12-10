@@ -434,8 +434,8 @@ int scan_static_playlist(char *path) {
     char linebuffer[PATH_MAX];
     IOHANDLE hfile;
     uint32_t playlistid;
-    M3UFILE *pm3u;
-    MP3FILE *pmp3;
+    PLAYLIST_NATIVE *pm3u;
+    MEDIA_NATIVE *pmp3;
     struct stat sb;
     char *current;
     char *perr;

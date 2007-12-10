@@ -14,7 +14,8 @@
 #define PL_QUERY            4
 #define PL_DB_TIMESTAMP     5
 #define PL_PATH             6
-#define PL_INDEX            7
+#define PL_IDX              7
+#define PL_LAST             8
 
 #define SG_ID               0
 #define SG_PATH             1
@@ -52,7 +53,7 @@
 #define SG_DISABLED        33
 #define SG_SAMPLE_COUNT    34
 #define SG_CODECTYPE       35
-#define SG_INDEX           36
+#define SG_IDX             36
 #define SG_HAS_VIDEO       37
 #define SG_CONTENTRATING   38
 #define SG_BITS_PER_SAMPLE 39
@@ -62,7 +63,7 @@
 /* Packed and unpacked formats */
 typedef struct tag_mp3file {
     char *path;
-    uint32_t index;
+    uint32_t idx;
     char *fname;
     char *title;     /* TIT2 */
     char *artist;    /* TPE1 */
@@ -126,7 +127,7 @@ typedef struct tag_m3ufile {
     char *query;          /**< where clause if type 1 (MSPS) */
     uint32_t db_timestamp;/**< time last updated */
     char *path;           /**< path of underlying playlist (if type 2) */
-    uint32_t index;       /**< index of playlist for paths with multiple playlists */
+    uint32_t idx;         /**< index of playlist for paths with multiple playlists */
 } M3UFILE, PLAYLIST_NATIVE;
 
 typedef struct tag_packed_m3ufile {
@@ -137,7 +138,7 @@ typedef struct tag_packed_m3ufile {
     char *query;
     char *db_timestamp;
     char *path;
-    char *index;
+    char *idx;
 } PACKED_M3UFILE,PLAYLIST_STRING;
 
 typedef struct tag_packed_mp3file {
@@ -146,78 +147,74 @@ typedef struct tag_packed_mp3file {
     char *fname;
     char *title;
     char *artist;
-    char *album;
+    char *album;             /* 05 */
     char *genre;
     char *comment;
     char *type;
     char *composer;
-    char *orchestra;
+    char *orchestra;         /* 10 */
     char *conductor;
     char *grouping;
     char *url;
     char *bitrate;
-    char *samplerate;
+    char *samplerate;        /* 15 */
     char *song_length;
     char *file_size;
     char *year;
     char *track;
-    char *total_tracks;
+    char *total_tracks;      /* 20 */
     char *disc;
     char *total_discs;
     char *bpm;
     char *compilation;
-    char *rating;
+    char *rating;            /* 25 */
     char *play_count;
     char *data_kind;
     char *item_kind;
     char *description;
-    char *time_added;
+    char *time_added;        /* 30 */
     char *time_modified;
     char *time_played;
     char *disabled;
     char *sample_count;
-    char *force_update;
-    char *codectype;
-    char *index;
+    char *codectype;         /* 35 */
+    char *idx;
     char *has_video;
     char *contentrating;
     char *bits_per_sample;
-    char *album_artist;
+    char *album_artist;      /* 40 */
 } PACKED_MP3FILE, MEDIA_STRING;
 
-/*
- * since database backends may produce rows in either format,
- * it's advantageous to allow them to provide rows in the fastest format
- * it can.  If we *have* to have a media object or playlist in a
- * specific style, we can use convenience functions to convert them.
- */
+#define QUERY_TYPE_ITEMS     0
+#define QUERY_TYPE_PLAYLISTS 1
+#define QUERY_TYPE_DISTINCT  2
 
-#define OBJECT_TYPE_NATIVE     0  /* Native, with all strings strduped */
-#define OBJECT_TYPE_STRING     1  /* Array of strings (sql style) */
+#define FILTER_TYPE_FIREFLY  0
+#define FILTER_TYPE_APPLE    1
+#define FILTER_TYPE_NONE     2
 
-typedef struct mediaobject_t {
-    int kind;
-    int packed;
-    union {
-        MEDIA_NATIVE *__pmnative;
-        MEDIA_STRING *__pmstring;
-    } __data_u;
-} MEDIAOBJECT;
+/* query info for db enums */
 
-#define pmstring __data_u.__pmstring
-#define pmnative __data_u.__pmnative
+#define QUERY_TYPE_ITEMS     0
+#define QUERY_TYPE_PLAYLISTS 1
+#define QUERY_TYPE_DISTINCT  2
 
-typedef struct playlistobject_t {
-    int kind;
-    int packed;
-    union {
-        PLAYLIST_NATIVE *__ppnative;
-        PLAYLIST_STRING *__ppstring;
-    } __data_u;
-} PLAYLISTOBJECT;
+typedef struct tag_db_query { /* this will get union'ed */
+    /* all */
+    int query_type;
+    int offset;
+    int limit;
+    uint32_t playlist_id;       /* for items query */
+    int totalcount;             /* returned total count */
+    void *priv;                 /* implementation private storage */
 
-#define ppstring __data_u.__ppstring
-#define ppnative __data_u.__ppnative
+    /* distincts */
+    int distinct_field;   /**< field to distinct on */
+
+    /* items */
+    int filter_type;
+    char *filter;
+} DB_QUERY;
 
 #define FT_INT32         0
 #define FT_INT64         1
@@ -229,31 +226,6 @@ typedef struct field_lookup_t {
     int type;
     int offset;
 } FIELD_LOOKUP;
-
-
-#define QUERY_TYPE_ITEMS     0
-#define QUERY_TYPE_PLAYLISTS 1
-#define QUERY_TYPE_DISTINCT  2
-
-#define FILTER_TYPE_FIREFLY  0
-#define FILTER_TYPE_APPLE    1
-#define FILTER_TYPE_NONE     2
-
-/* query info for db enums */
-typedef struct tag_db_query {
-    int query_type;
-    char *distinct_field;
-    int filter_type;
-    char *filter;
-
-    int offset;
-    int limit;
-
-    int playlist_id;            /* for items query */
-    int totalcount;             /* returned total count */
-
-    void *priv;                 /* implementation private storage */
-} DB_QUERY;
 
 extern FIELD_LOOKUP ff_field_data[];
 
