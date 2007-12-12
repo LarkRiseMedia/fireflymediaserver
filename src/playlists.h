@@ -50,6 +50,7 @@ extern int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query);
 extern int pl_delete_playlist(char **pe, uint32_t playlistid);
 extern int pl_delete_playlist_item(char **pe, uint32_t playlistid, uint32_t songid);
 extern int pl_get_playlist_count(char **pe, int *count);
+
 extern PLAYLIST_NATIVE *pl_fetch_playlist(char **pe, char *path, uint32_t index);
 extern PLAYLIST_NATIVE *pl_fetch_playlist_id(char **pe, uint32_t id);
 extern void pl_dispose_playlist(PLAYLIST_NATIVE *ppln);

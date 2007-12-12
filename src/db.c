@@ -23,6 +23,7 @@
 #include "config.h"
 #endif
 
+#include <limits.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -74,6 +75,7 @@ typedef struct tag_plugin_db_fn {
 typedef struct enum_helper_t {
     PLENUMHANDLE handle;
     char **result;
+    int current_position;
 } ENUMHELPER;
 
 #define MAYBEFREE(a) if((a)) free((a));
@@ -405,8 +407,14 @@ int db_add(char **pe, MEDIA_NATIVE *pmo) {
  */
 int db_enum_start(char **pe, DB_QUERY *pinfo) {
     char *e_pl;
+    ENUMHELPER *peh;
+    PLAYLIST_NATIVE *ppn;
 
     db_readlock();
+
+    if(pinfo->limit == 0)
+        pinfo->limit = INT_MAX;
+
     pinfo->priv = (void*)malloc(sizeof(ENUMHELPER));
     if(!pinfo->priv) {
         db_set_error(pe,DB_E_MALLOC);
@@ -414,14 +422,25 @@ int db_enum_start(char **pe, DB_QUERY *pinfo) {
         return DB_E_MALLOC;
     }
     memset(pinfo->priv,0,sizeof(ENUMHELPER));
+    peh = pinfo->priv;
 
     /* worry about playlists and items first */
     switch(pinfo->query_type) {
     case QUERY_TYPE_ITEMS:
         /* this won't work with a query */
-        ((ENUMHELPER *)pinfo->priv)->handle = (void*)pl_enum_items_start(&e_pl, pinfo->playlist_id);
+        ppn = pl_fetch_playlist_id(&e_pl, pinfo->playlist_id);
+        if(!ppn) {
+            db_unlock();
+            db_set_error(pe,DB_E_PLAYLIST,e_pl);
+            free(e_pl);
+            free(pinfo->priv);
+            return DB_E_PLAYLIST;
+        }
+        pinfo->totalcount = ppn->items;
+        pl_dispose_playlist(ppn);
+        peh->handle = (void*)pl_enum_items_start(&e_pl, pinfo->playlist_id);
 
-        if(!((ENUMHELPER*)pinfo->priv)->handle) {
+        if(!peh->handle) {
             db_unlock();
             db_set_error(pe,DB_E_PLAYLIST,e_pl);
             free(e_pl);
@@ -432,9 +451,9 @@ int db_enum_start(char **pe, DB_QUERY *pinfo) {
     case QUERY_TYPE_PLAYLISTS:
         pl_get_playlist_count(pe, &pinfo->totalcount);
 
-        ((ENUMHELPER *)pinfo->priv)->handle = (void*)pl_enum_start(&e_pl);
+        peh->handle = (void*)pl_enum_start(&e_pl);
 
-        if(!((ENUMHELPER*)pinfo->priv)->handle) {
+        if(!peh->handle) {
             db_unlock();
             db_set_error(pe,DB_E_PLAYLIST,e_pl);
             free(e_pl);
@@ -459,6 +478,7 @@ int db_enum_start(char **pe, DB_QUERY *pinfo) {
 int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
     uint32_t id;
     ENUMHELPER *peh;
+    int err;
 
     ASSERT((pquery) && (pquery->priv));
 
@@ -476,7 +496,18 @@ int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
             peh->result = NULL;
         }
 
-        id = pl_enum_items_fetch(NULL, peh->handle);
+        if(peh->current_position - pquery->offset >= pquery->limit) {
+            *result = NULL;
+            return DB_E_SUCCESS;
+        }
+
+        while(1) {
+            id = pl_enum_items_fetch(NULL, peh->handle);
+            peh->current_position++;
+
+            if((peh->current_position > pquery->offset) || (!id))
+                break;
+        }
 
         if(!id) {
             *result = NULL;
@@ -488,8 +519,22 @@ int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
         *result = peh->result;
         break;
     case QUERY_TYPE_PLAYLISTS:
-        return pl_enum_fetch(pe, result, peh->handle);
+        if(peh->current_position - pquery->offset >= pquery->limit) {
+            *result = NULL;
+            return DB_E_SUCCESS;
+        }
+
+        while(1) {
+            err = pl_enum_fetch(pe, result, peh->handle);
+            peh->current_position++;
+            if((peh->current_position > pquery->offset) ||
+               (err != PL_E_SUCCESS) ||
+               (!*result))
+                break;
+        }
+        return err;
         break;
+
     case QUERY_TYPE_DISTINCT:
         *result = NULL;
         break;
