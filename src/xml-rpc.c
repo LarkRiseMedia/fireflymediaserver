@@ -625,6 +625,11 @@ void xml_get_stats(WS_CONNINFO *pwsc) {
     xml_output(pxml,"value","%d",config.stats.songs_served);
     xml_pop(pxml); /* stat */
 
+    xml_push(pxml,"stat");
+    xml_output(pxml,"name","DB Fetches");
+    xml_output(pxml,"value","%d",config.stats.db_fetches);
+    xml_pop(pxml); /* stat */
+
     xml_pop(pxml); /* statistics */
 
 

@@ -173,9 +173,9 @@ int pl_update_smart(char **pe, PLAYLIST *ppl) {
     uint32_t song_id;
     char *e_db;
 
-    ASSERT((ppl) && (ppl->ppln) && (ppl->ppln->type == PL_SMART));
+    ASSERT((ppl) && (ppl->ppln) && (ppl->ppln->type & PL_DYNAMIC));
 
-    if((!ppl) || (!ppl->ppln) || (ppl->ppln->type != PL_SMART))
+    if((!ppl) || (!ppl->ppln) || (!(ppl->ppln->type & PL_DYNAMIC)))
         return DB_E_SUCCESS; /* ?? */
 
     pl_purge(ppl);
@@ -244,7 +244,7 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
     char *e_db;
 
     ASSERT(name);
-    ASSERT((type != PL_SMART) || (query));
+    ASSERT((type & PL_DYNAMIC) || (query));
 
     DPRINTF(E_DBG,L_PL,"Adding playlist %s\n",name);
 
@@ -254,17 +254,17 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
     }
 
     /* Check for stupidness */
-    if((PL_SMART == type) && (!query)) {
+    if((type & PL_DYNAMIC) && (!query)) {
         pl_set_error(pe, PL_E_NOCLAUSE);
         return PL_E_NOCLAUSE;
     }
 
-    if(((PL_STATICFILE == type) || (PL_STATICXML == type)) && !path) {
+    if(((PL_STATICFILE == type) || (PL_STATICXML == type)) && (!path)) {
         pl_set_error(pe, PL_E_NOPATH);
         return PL_E_NOPATH;
     }
 
-    if(PL_SMART == type) {
+    if(type & PL_DYNAMIC) {
         pt = sp_init();
         if(!pt) {
             pl_set_error(pe, PL_E_MALLOC);
@@ -327,7 +327,7 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
     ppln->title = strdup(name);
     ppln->type = type;
 
-    if(PL_SMART == type) {
+    if(type & PL_DYNAMIC) {
         ppln->query = strdup(query);
     }
 
@@ -352,7 +352,7 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
     pcurrent->next = pnew;
     pnew->next = NULL;
 
-    if(PL_SMART == type) {
+    if(type & PL_DYNAMIC) {
         DPRINTF(E_DBG,L_PL,"Updating smart playlist\n");
         if(PL_E_SUCCESS != pl_update_smart(&e_db,pnew)) {
             pl_set_error(pe,PL_E_DBERROR,e_db);
@@ -525,7 +525,7 @@ int pl_edit_playlist(char **pe, uint32_t id, char *name, char *query) {
         return PL_E_NOTFOUND;
     }
 
-    if((ppl->ppln->type == PL_SMART) && (query)) {
+    if((ppl->ppln->type & PL_DYNAMIC) && (query)) {
         /* we are updating the query... */
         ppt_new = sp_init();
         if(!ppt_new) {
@@ -671,7 +671,9 @@ int pl_get_playlist_count(char **pe, int *count) {
     //util_mutex_lock(l_pl);
 
     while(ppl) {
-        result++;
+        /* dont' count hidden playlists */
+        if((ppl->ppln) && (!(ppl->ppln->type & PL_HIDDEN)))
+            result++;
         ppl = ppl->next;
     }
 
@@ -905,11 +907,19 @@ int pl_enum_fetch(char **pe, char ***result, PLENUMHANDLE pleh) {
         MAYBEFREE(ppls->idx);
     }
 
-    pleh->ppl = pleh->ppl->next;
-    if(!pleh->ppl) {
-        *result = NULL;
-        memset(ppls,0,sizeof(PLAYLIST_STRING));
-        return PL_E_SUCCESS;
+    /* find the next non-hidden playlist */
+    while(1) {
+        pleh->ppl = pleh->ppl->next;
+        if(!pleh->ppl) {
+            *result = NULL;
+            memset(ppls,0,sizeof(PLAYLIST_STRING));
+            return PL_E_SUCCESS;
+        }
+        if(pleh->ppl->ppln && (pleh->ppl->ppln->type & PL_HIDDEN)) {
+            pleh->ppl = pleh->ppl->next;
+        } else {
+            break;
+        }
     }
 
     /* yuck */
@@ -1004,7 +1014,7 @@ void pl_advise_add(MEDIA_NATIVE *pmn) {
     /* walk through all the playlists, adding them if necessary */
     while(ppl) {
         if((1 == ppl->ppln->id) ||
-           ((PL_SMART == ppl->ppln->type) &&
+           ((ppl->ppln->type & PL_DYNAMIC) &&
             (sp_matches_native(ppl->pt, pmn))))
             pl_add_playlist_item(NULL, 1, pmn->id);
         ppl = ppl->next;

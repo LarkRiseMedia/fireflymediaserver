@@ -229,9 +229,14 @@ typedef struct field_lookup_t {
 
 extern FIELD_LOOKUP ff_field_data[];
 
-#define PL_STATICWEB  0
-#define PL_SMART      1
-#define PL_STATICFILE 2
-#define PL_STATICXML  3
+#define PL_STATIC     0x10
+#define PL_DYNAMIC    0x20
+#define PL_HIDDEN     0x40
+
+#define PL_STATICWEB  0x11
+#define PL_STATICFILE 0x12
+#define PL_STATICXML  0x13
+#define PL_SMART      0x24
+#define PL_FOLDER     0x05
 
 #endif /* _FF_DBSTRUCT_H_ */

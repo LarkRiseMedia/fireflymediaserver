@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "daapd.h"
 #include "db.h"
 #include "err.h"
 
@@ -39,6 +40,7 @@
 #include "db-sql-sqlite3.h"
 #include "playlists.h"
 #include "util.h"
+#include "redblack.h"
 
 #ifdef DEBUG
 #  ifndef ASSERT
@@ -75,7 +77,18 @@ typedef struct tag_plugin_db_fn {
 typedef struct enum_helper_t {
     PLENUMHANDLE handle;
     char **result;
+    char *composite_query;
+    uint32_t old_playlist;
+
+    /* index/limits */
     int current_position;
+
+    /* distinct */
+    struct rbtree *pdistinct;
+    char *last_value;
+    int nextop;
+    int(*enum_start)(char **, DB_QUERY *);
+    int(*enum_fetch)(char **, char ***, DB_QUERY *);
 } ENUMHELPER;
 
 #define MAYBEFREE(a) if((a)) free((a));
@@ -172,6 +185,15 @@ static void db_set_error(char **pe, int err, ...);
 static char *db_util_strdup(char *string);
 static uint32_t db_util_atoui32(char *string);
 static uint64_t db_util_atoui64(char *string);
+
+static int db_enum_items_start(char **pe, DB_QUERY *pinfo);
+static int db_enum_playlist_start(char **pe, DB_QUERY *pinfo);
+static int db_enum_browse_start(char **pe, DB_QUERY *pinfo);
+
+static int db_enum_items_fetch(char **pe, char ***result, DB_QUERY *pquery);
+static int db_enum_playlist_fetch(char **pe, char ***result, DB_QUERY *pquery);
+static int db_enum_browse_fetch(char **pe, char ***result, DB_QUERY *pquery);
+
 
 #define DB_STR_COPY(field) pnew->field=db_util_strdup(pmos->field)
 #define DB_INT32_COPY(field) pnew->field=db_util_atoui32(pmos->field)
@@ -327,9 +349,10 @@ int db_init(int reload) {
     MEDIA_STRING *pmo;
     uint32_t m_id;
 
-    pl_add_playlist(NULL,"Library",PL_STATICWEB,NULL,NULL,0,&id);
+    pl_add_playlist(&pe,"Library",PL_STATICWEB,NULL,NULL,0,&id);
     if(id != 1) {
-        DPRINTF(E_FATAL,L_DB,"Can't add library playlist");
+        DPRINTF(E_FATAL,L_DB,"Can't add library playlist: %s\n",pe);
+        free(pe);
     }
 
     /* walk through and add all the items */
@@ -406,9 +429,11 @@ int db_add(char **pe, MEDIA_NATIVE *pmo) {
  * @returns DB_E_SUCCESS on success, error with pe allocated otherwise
  */
 int db_enum_start(char **pe, DB_QUERY *pinfo) {
-    char *e_pl;
     ENUMHELPER *peh;
-    PLAYLIST_NATIVE *ppn;
+    PLAYLIST_NATIVE *plold;
+    char *e_pl = NULL;
+    char *name;
+    int err;
 
     db_readlock();
 
@@ -424,47 +449,196 @@ int db_enum_start(char **pe, DB_QUERY *pinfo) {
     memset(pinfo->priv,0,sizeof(ENUMHELPER));
     peh = pinfo->priv;
 
-    /* worry about playlists and items first */
+    if(pinfo->filter) {
+        if(pinfo->playlist_id != 1) {
+            /* construct a new query, based on playlist */
+            plold = pl_fetch_playlist_id(&e_pl,pinfo->playlist_id);
+            if(!plold) {
+                db_set_error(pe,DB_E_PLAYLIST,e_pl);
+                free(e_pl);
+                db_unlock();
+                return DB_E_PLAYLIST;
+            }
+
+            peh->composite_query = util_asprintf("(%s) and (%s)",
+                                                 plold->query,
+                                                 pinfo->filter);
+            pl_dispose_playlist(plold);
+        } else {
+            peh->composite_query = strdup(pinfo->filter);
+        }
+
+        peh->old_playlist = pinfo->playlist_id;
+
+        /* got the new query in pinfo->query, now set up a hidden playlist */
+        name = util_asprintf("%x-%s",util_get_threadid(), &pinfo);
+
+        err = pl_add_playlist(&e_pl, name, PL_SMART | PL_HIDDEN,
+                              peh->composite_query, NULL, 0,
+                              &pinfo->playlist_id);
+        if(err != PL_E_SUCCESS) {
+            db_set_error(pe,DB_E_PLAYLIST,e_pl);
+            free(e_pl);
+            if(peh->composite_query) free(peh->composite_query);
+            db_unlock();
+            return DB_E_PLAYLIST;
+        }
+
+        DPRINTF(E_DBG,L_PL,"Created new playlist %d with query %s\n",
+                pinfo->playlist_id, peh->composite_query);
+    }
+
     switch(pinfo->query_type) {
     case QUERY_TYPE_ITEMS:
-        /* this won't work with a query */
-        ppn = pl_fetch_playlist_id(&e_pl, pinfo->playlist_id);
-        if(!ppn) {
-            db_unlock();
-            db_set_error(pe,DB_E_PLAYLIST,e_pl);
-            free(e_pl);
-            free(pinfo->priv);
-            return DB_E_PLAYLIST;
-        }
-        pinfo->totalcount = ppn->items;
-        pl_dispose_playlist(ppn);
-        peh->handle = (void*)pl_enum_items_start(&e_pl, pinfo->playlist_id);
-
-        if(!peh->handle) {
-            db_unlock();
-            db_set_error(pe,DB_E_PLAYLIST,e_pl);
-            free(e_pl);
-            free(pinfo->priv);
-            return DB_E_PLAYLIST;
-        }
+        peh->enum_start = db_enum_items_start;
+        peh->enum_fetch = db_enum_items_fetch;
+        //        peh->enum_reset = db_enum_items_reset;
+        //        peh->enum_end = db_enum_items_end;
         break;
     case QUERY_TYPE_PLAYLISTS:
-        pl_get_playlist_count(pe, &pinfo->totalcount);
-
-        peh->handle = (void*)pl_enum_start(&e_pl);
-
-        if(!peh->handle) {
-            db_unlock();
-            db_set_error(pe,DB_E_PLAYLIST,e_pl);
-            free(e_pl);
-            free(pinfo->priv);
-            return DB_E_PLAYLIST;
-        }
+        peh->enum_start = db_enum_playlist_start;
+        peh->enum_fetch = db_enum_playlist_fetch;
+        //        peh->enum_reset = db_enum_playlist_reset;
+        //        peh->enum_end = db_enum_playlist_end;
         break;
     case QUERY_TYPE_DISTINCT:
+        peh->enum_start = db_enum_browse_start;
+        peh->enum_fetch = db_enum_browse_fetch;
+        //        peh->enum_reset = db_enum_browse_reset;
+        //        peh->enum_end = db_enum_browse_end;
+        break;
+    default:
+        DPRINTF(E_FATAL,L_DB,"Bad query type: %d\n", pinfo->query_type);
         break;
     }
 
+    err = peh->enum_start(pe, pinfo);
+    if(err != DB_E_SUCCESS) {
+        if(peh->composite_query) {
+            free(peh->composite_query);
+            pl_delete_playlist(NULL,pinfo->playlist_id);
+        }
+    }
+
+    return err;
+}
+
+int db_enum_items_start(char **pe, DB_QUERY *pinfo) {
+    char *e_pl;
+    ENUMHELPER *peh;
+    PLAYLIST_NATIVE *ppn;
+
+    peh = (ENUMHELPER*)pinfo->priv;
+
+    /* this won't work with a query */
+    ppn = pl_fetch_playlist_id(&e_pl, pinfo->playlist_id);
+    if(!ppn) {
+        DPRINTF(E_LOG,L_DB,"Error fetching playlist %d\n",pinfo->playlist_id);
+        db_unlock();
+        db_set_error(pe,DB_E_PLAYLIST,e_pl);
+        free(e_pl);
+        free(pinfo->priv);
+        return DB_E_PLAYLIST;
+    }
+    pinfo->totalcount = ppn->items;
+    pl_dispose_playlist(ppn);
+    peh->handle = (void*)pl_enum_items_start(&e_pl, pinfo->playlist_id);
+
+    if(!peh->handle) {
+        DPRINTF(E_LOG,L_DB,"Error starting playlist enumeration: %s\n",e_pl);
+        db_unlock();
+        db_set_error(pe,DB_E_PLAYLIST,e_pl);
+        free(e_pl);
+        free(pinfo->priv);
+        return DB_E_PLAYLIST;
+    }
+
+    return DB_E_SUCCESS;
+}
+
+int db_enum_playlist_start(char **pe, DB_QUERY *pinfo) {
+    char *e_pl;
+    ENUMHELPER *peh;
+
+    peh = (ENUMHELPER*)pinfo->priv;
+
+    pl_get_playlist_count(pe, &pinfo->totalcount);
+
+    peh->handle = (void*)pl_enum_start(&e_pl);
+
+    if(!peh->handle) {
+        DPRINTF(E_LOG,L_DB,"Error starting playlist enumeration: %s\n",e_pl);
+        db_unlock();
+        db_set_error(pe,DB_E_PLAYLIST,e_pl);
+        free(e_pl);
+        free(pinfo->priv);
+        return DB_E_PLAYLIST;
+    }
+
+    return DB_E_SUCCESS;
+}
+
+int db_distinct_compare(const void *v1, const void *v2, const void *pinfo) {
+    int field_id = *((int*)(pinfo));  /* might care if we're doing 'The' fixups */
+    char *f1 = v1? (char*)v1 : "";
+    char *f2 = v2? (char*)v2 : "";
+
+    return strcasecmp(f1,f2);
+}
+
+int db_enum_browse_start(char **pe, DB_QUERY *pinfo) {
+    DB_QUERY pinfo2;
+    int err;
+    char **rows;
+    int count = 0;
+    void *val;
+    ENUMHELPER *peh;
+    char *value;
+
+    // We'll want to handle the query, etc
+    memcpy(&pinfo2,pinfo,sizeof(DB_QUERY));
+    pinfo2.query_type = QUERY_TYPE_ITEMS;
+
+    DPRINTF(E_DBG,L_DB,"Browsing playlist %d\n",pinfo2.playlist_id);
+
+    peh = (ENUMHELPER*)pinfo->priv;
+
+    pinfo->totalcount=0;
+
+    peh->pdistinct = rbinit(db_distinct_compare,&pinfo->distinct_field);
+
+    // Walk through the db and get all distincts
+    if(DB_E_SUCCESS == db_enum_start(pe, &pinfo2)) {
+        while((DB_E_SUCCESS == (err=db_enum_fetch(pe, &rows, &pinfo2))) && rows) {
+            value = rows[pinfo->distinct_field] ? rows[pinfo->distinct_field] : "";
+
+            if((strlen(value)) && (!rbfind((void*)rows[pinfo->distinct_field],peh->pdistinct))) {
+                count++;
+                DPRINTF(E_DBG,L_DB,"Adding distinct: %s\n",rows[pinfo->distinct_field]);
+                val=(void*)rbsearch((const void*)strdup(rows[pinfo->distinct_field]), peh->pdistinct);
+                if(!val) {
+                    DPRINTF(E_LOG,L_DB,"Error adding distinct value %s\n",
+                            rows[pinfo->distinct_field]);
+                }
+
+            }
+        }
+
+        if(err != DB_E_SUCCESS) {
+            DPRINTF(E_LOG,L_DB,"Error enumerating playlist: %s\n",pe);
+            db_enum_end(NULL, pinfo);
+            return err;
+        }
+
+    } else {
+        DPRINTF(E_LOG,L_DB,"Error starting enumeration: %s\n",pe);
+        free(pe);
+    }
+
+    db_enum_end(pe, &pinfo2);
+    pinfo->totalcount = count;
+    peh->nextop = RB_LUFIRST;
+    peh->last_value = NULL;
     return DB_E_SUCCESS;
 }
 
@@ -476,7 +650,6 @@ int db_enum_start(char **pe, DB_QUERY *pinfo) {
  * @returns DB_E_SUCCESS on success, error code with pe allocated on failure
  */
 int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
-    uint32_t id;
     ENUMHELPER *peh;
     int err;
 
@@ -489,63 +662,83 @@ int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
 
     peh = (ENUMHELPER*)pquery->priv;
 
-    switch(pquery->query_type) {
-    case QUERY_TYPE_ITEMS:
-        if(peh->result) {
-            db_pfn->db_dispose_item((MEDIA_STRING*)peh->result);
-            peh->result = NULL;
-        }
-
-        if(peh->current_position - pquery->offset >= pquery->limit) {
-            *result = NULL;
-            return DB_E_SUCCESS;
-        }
-
-        while(1) {
-            id = pl_enum_items_fetch(NULL, peh->handle);
-            peh->current_position++;
-
-            if((peh->current_position > pquery->offset) || (!id))
-                break;
-        }
-
-        if(!id) {
-            *result = NULL;
-            return DB_E_SUCCESS;
-        }
-
-        /* fetch the item */
-        peh->result = (char**)db_pfn->db_fetch_item(pe, id);
-        *result = peh->result;
-        break;
-    case QUERY_TYPE_PLAYLISTS:
-        if(peh->current_position - pquery->offset >= pquery->limit) {
-            *result = NULL;
-            return DB_E_SUCCESS;
-        }
-
-        while(1) {
-            err = pl_enum_fetch(pe, result, peh->handle);
-            peh->current_position++;
-            if((peh->current_position > pquery->offset) ||
-               (err != PL_E_SUCCESS) ||
-               (!*result))
-                break;
-        }
-        return err;
-        break;
-
-    case QUERY_TYPE_DISTINCT:
+    if(peh->current_position >= pquery->offset + pquery->limit) {
         *result = NULL;
-        break;
+        return DB_E_SUCCESS;
     }
+
+    /* FIXME: could give hints to the item fetches about whether or
+     * not they are going to be skipped, allowing for a partial
+     * fetch
+     */
+    while(1) {
+        err = peh->enum_fetch(pe, result, pquery);
+        if((peh->current_position >= pquery->offset) ||
+           (err != DB_E_SUCCESS) ||
+           (!*result)) {
+            peh->current_position++;
+            break;
+        }
+        peh->current_position++;
+    }
+
+    return err;
+}
+
+int db_enum_items_fetch(char **pe, char ***result, DB_QUERY *pquery) {
+    uint32_t id;
+    ENUMHELPER *peh;
+
+    peh = (ENUMHELPER*)pquery->priv;
+
+    if(peh->result) {
+        db_pfn->db_dispose_item((MEDIA_STRING*)peh->result);
+        peh->result = NULL;
+    }
+
+    id = pl_enum_items_fetch(NULL, peh->handle);
+    if(!id) {
+        *result = NULL;
+        return DB_E_SUCCESS;
+    }
+
+    /* fetch the item */
+    peh->result = (char**)db_pfn->db_fetch_item(pe, id);
+    *result = peh->result;
+    return DB_E_SUCCESS;
+}
+
+int db_enum_playlist_fetch(char **pe, char ***result, DB_QUERY *pquery) {
+    ENUMHELPER *peh;
+
+    peh = (ENUMHELPER*)pquery->priv;
+
+    return pl_enum_fetch(pe, result, peh->handle);
+}
+
+int db_enum_browse_fetch(char **pe, char ***result, DB_QUERY *pquery) {
+    ENUMHELPER *peh;
+    char *ptr;
+
+    peh = (ENUMHELPER*)pquery->priv;
+
+    ptr = (char*)rblookup(peh->nextop, peh->last_value, peh->pdistinct);
+    peh->nextop = RB_LUNEXT;
+    peh->last_value = ptr;
+
+    DPRINTF(E_DBG,L_DB,"Returning browse: %s\n",ptr);
+    if(ptr)
+        *result = &peh->last_value; /* hack hack hack */
+    else
+        *result = NULL;
 
     return DB_E_SUCCESS;
 }
 
 
+
 /**
- * finish enumeration
+ * reset enumeration
  *
  * @param pe error buffer
  * @returns DB_E_SUCCESS on success, error code with pe allocate on failure
@@ -572,32 +765,49 @@ int db_enum_reset(char **pe, DB_QUERY *pquery) {
  */
 int db_enum_end(char **pe, DB_QUERY *pquery) {
     ENUMHELPER *peh;
+    char *pelement;
 
     ASSERT((pquery) && (pquery->priv));
+
+    if((!pquery) || (!pquery->priv))
+        return DB_E_SUCCESS;
 
     peh = (ENUMHELPER*)pquery->priv;
 
     switch(pquery->query_type) {
     case QUERY_TYPE_ITEMS:
-        if((pquery) && (pquery->priv)) {
-            if(peh->result) {
-                DPRINTF(E_DBG,L_PL,"Freeing last result\n");
-                free(peh->result);
-            }
-            DPRINTF(E_DBG,L_PL,"Ending playlist enumeration\n");
-            pl_enum_items_end(peh->handle);
+        if(peh->result) {
+            DPRINTF(E_DBG,L_PL,"Freeing last result\n");
+            free(peh->result);
         }
+        DPRINTF(E_DBG,L_PL,"Ending playlist enumeration\n");
+        pl_enum_items_end(peh->handle);
         break;
     case QUERY_TYPE_PLAYLISTS:
-        if((pquery) && (pquery->priv))
-            pl_enum_end(peh->handle);
+        pl_enum_end(peh->handle);
         break;
     case QUERY_TYPE_DISTINCT:
+        if(peh->pdistinct) {
+            pelement = (char*)rblookup(RB_LUFIRST,NULL,peh->pdistinct);
+            while(pelement) {
+                pelement = (char*)rbdelete((void*)pelement,peh->pdistinct);
+                if(pelement)
+                    free(pelement);
+                pelement = (void*)rblookup(RB_LUFIRST,NULL,peh->pdistinct);
+            }
+            rbdestroy(peh->pdistinct);
+            peh->pdistinct = NULL;
+        }
         break;
     }
 
+    if(peh->composite_query) {
+        free(peh->composite_query);
+        pl_delete_playlist(NULL,pquery->playlist_id);
+    }
+
     DPRINTF(E_DBG,L_PL,"Freeing prive\n");
-    free(pquery->priv);
+    free(peh);
 
     db_unlock();
     return DB_E_SUCCESS;
@@ -711,6 +921,8 @@ MEDIA_NATIVE *db_fetch_item(char **pe, int id) {
     pstring = db_pfn->db_fetch_item(pe, id);
     if(!pstring)
         return NULL;
+
+    config.stats.db_fetches++;
 
     /* otherwise, convert to native format */
     pnative = db_string_to_native(pstring);
