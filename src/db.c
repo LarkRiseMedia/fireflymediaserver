@@ -703,6 +703,7 @@ int db_enum_items_fetch(char **pe, char ***result, DB_QUERY *pquery) {
     }
 
     /* fetch the item */
+    config.stats.db_fetches++;
     peh->result = (char**)db_pfn->db_fetch_item(pe, id);
     *result = peh->result;
     return DB_E_SUCCESS;
@@ -958,6 +959,7 @@ int db_playcount_increment(char **pe, int id) {
 
     db_writelock();
 
+    config.stats.db_fetches++;
     pold = db_fetch_item(pe, id);
     if(!pold) {
         db_unlock();

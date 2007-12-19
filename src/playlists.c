@@ -58,7 +58,8 @@ typedef struct playlist_t {
 
 struct plenumhandle_t {
     PLAYLIST *ppl;
-    int nextop;
+    int nextop;  /* unused? */
+    RBLIST *rblist;
     void *last_value;
 };
 
@@ -81,6 +82,7 @@ char *pl_error_list[] = {
     "Invalid media item id (%d)",
     "Internal red/black tree error",
     "Operation on invalid playlist (id %d)",
+    "Invalid parameter passed",
 };
 
 static void pl_set_error(char **pe, int error, ...);
@@ -784,8 +786,6 @@ void pl_dispose_playlist(PLAYLIST_NATIVE *ppln) {
 /**
  * walk a playlist.  This assumes that a readlock
  * is held
- *
- * FIXME: Use rbopenlist, rbreadlist and rbcloselist
  */
 PLENUMHANDLE pl_enum_items_start(char **pe, uint32_t playlist_id) {
     PLENUMHANDLE pleh;
@@ -804,24 +804,42 @@ PLENUMHANDLE pl_enum_items_start(char **pe, uint32_t playlist_id) {
         return NULL;
     }
 
-    pleh->ppl = ppl;
-    pleh->nextop = RB_LUFIRST;
-    pleh->last_value = NULL;
+    pleh->rblist = rbopenlist(ppl->prb);
+
+    if(!pleh->rblist) {
+        pl_set_error(pe,PL_E_RBTREE);
+        return NULL;
+    }
 
     return pleh;
 }
 
 int pl_enum_items_reset(char **pe, PLENUMHANDLE pleh) {
-    pleh->nextop = RB_LUFIRST;
-    pleh->last_value = NULL;
+    ASSERT(pleh);
+
+    if(!pleh)
+        return PL_E_INVALID;
+
+    rbcloselist(pleh->rblist);
+    pleh->rblist = rbopenlist(pleh->ppl->prb);
+    if(!pleh->rblist) {
+        pl_set_error(pe,PL_E_RBTREE);
+        return PL_E_RBTREE;
+    }
+
     return PL_E_SUCCESS;
 }
 
 uint32_t pl_enum_items_fetch(char **pe, PLENUMHANDLE pleh) {
     uint32_t *ptr;
 
-    ptr = (uint32_t *)rblookup(pleh->nextop, pleh->last_value, pleh->ppl->prb);
-    pleh->nextop = RB_LUNEXT;
+    ASSERT(pleh);
+    if(!pleh) {
+        pl_set_error(pe,PL_E_INVALID);
+        return 0;
+    }
+
+    ptr = (uint32_t *)rbreadlist(pleh->rblist);
     pleh->last_value = ptr;
 
     if(!ptr)
@@ -830,8 +848,12 @@ uint32_t pl_enum_items_fetch(char **pe, PLENUMHANDLE pleh) {
     return *(uint32_t*)ptr;
 }
 
-void pl_enum_items_end(PLENUMHANDLE hple) {
-    free(hple);
+void pl_enum_items_end(PLENUMHANDLE pleh) {
+    ASSERT(pleh);
+
+    rbcloselist(pleh->rblist);
+    if(pleh)
+        free(pleh);
 }
 
 

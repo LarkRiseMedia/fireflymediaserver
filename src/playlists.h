@@ -38,6 +38,7 @@
 #define PL_E_BADSONGID   10
 #define PL_E_RBTREE      11
 #define PL_E_BADPLID     12
+#define PL_E_INVALID     13
 
 typedef struct plenumhandle_t *PLENUMHANDLE;
 
