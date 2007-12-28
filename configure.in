@@ -39,7 +39,6 @@ else
     fi
 fi
 
-
 AC_DEFINE_UNQUOTED(CONFFILE,"${CONFFILE}",Where the config file is)
 
 rend_posix=true
@@ -54,6 +53,7 @@ use_iconv=true
 STATIC_LIBS=no
 
 CPPFLAGS="${CPPFLAGS} -g -Wall"
+CFLAGS=""
 
 dnl fix freebsd's broken (?) libpthread
 AC_CHECK_LIB(c_r,pthread_creat,LIBS="${LIBS} -lc_r", [

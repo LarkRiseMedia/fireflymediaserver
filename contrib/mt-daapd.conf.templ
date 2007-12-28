@@ -63,15 +63,26 @@ db_type = sqlite
 # db_parms
 #
 # This is any extra information the db needs to connect.
-# in the case of sqlite and sqlite3, this is the name
-# of the directory to store the database in
+# This is really only here for future compatibility.  
+# It will be necessary to specify a username,password, and db
+# for db backends like mysql, postgres, etc.  Currently, it
+# it unused, and not required for sqlite2, sqlite3, or gdbm
+# backends
+#
+
+#
+# cache_dir
 #
 # If you installed from RPM or .deb, this path likely already
 # exists.  If not, then you must create it.  The directory itself
 # must be writable by the "runas" user.
 #
+# This is the directory that firefly saves the sqlite or gdbm
+# database in, as well as other private files (persistent playlists,
+# mmaped files for daap streams, etc)
+#
 
-db_parms = @dbdir@
+cache_dir = @db_dir@
 
 #
 # mp3_dir (required)
