@@ -542,6 +542,7 @@ int main(int argc, char *argv[]) {
 
     if(conf_get_array("general","mp3_dir",&mp3_dir_array)) {
         if((!skip_initial) || (reload)) {
+            db_hint(DB_HINT_PRESCAN_START);
             DPRINTF(E_LOG,L_MAIN|L_SCAN,"Starting mp3 scan\n");
 
             plugin_event_dispatch(PLUGIN_EVENT_FULLSCAN_START,0,NULL,0);
@@ -556,6 +557,7 @@ int main(int argc, char *argv[]) {
                 DPRINTF(E_LOG,L_MAIN|L_SCAN,"Scanned %d songs in %d seconds\n",
                         song_count,end_time - start_time);
             }
+            db_hint(DB_HINT_PRESCAN_END);
         }
         conf_dispose_array(mp3_dir_array);
     }

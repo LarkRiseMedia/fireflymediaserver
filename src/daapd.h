@@ -67,7 +67,9 @@ typedef struct tag_stats {
 
     unsigned int gb_served;     /**< How many gigs of data have been served (unused) */
     unsigned int bytes_served;  /**< How many bytes of data served (unused) */
-    uint32_t db_fetches;
+    uint32_t db_enum_fetches;
+    uint32_t db_id_fetches;
+    uint32_t db_id_hits;
 } STATS;
 
 /** Global config struct */

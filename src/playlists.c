@@ -127,8 +127,16 @@ int pl_compare(const void *v1, const void *v2, const void *vso) {
     int id2 = *((int*)v2);
     MEDIA_NATIVE *p1;
     MEDIA_NATIVE *p2;
+    int result;
 
-    int result = 1; // default - return in insert order
+    if(!ps) { /* unspecified sort order */
+        /* return in id order */
+        if(id1 < id2)
+            return -1;
+        if(id1 > id2)
+            return 1;
+        return 0;
+    }
 
     /* FIXME: look these things up from a LRU cache based on tree depth */
     p1 = db_fetch_item(NULL, id1);
@@ -142,16 +150,6 @@ int pl_compare(const void *v1, const void *v2, const void *vso) {
         DPRINTF(E_LOG,L_PL,"DANGER: pl_compare: null item fetch\n");
         db_dispose_item(p1);
         return 0;
-    }
-
-    if(!ps) { /* default sort order  -- by id */
-        if(p1->id < p2->id) {
-            result = -1;
-        } else if(p1->id > p2->id) {
-            result = 1;
-        } else {
-            result = 0;
-        }
     }
 
     db_dispose_item(p1);
@@ -804,6 +802,7 @@ PLENUMHANDLE pl_enum_items_start(char **pe, uint32_t playlist_id) {
         return NULL;
     }
 
+    pleh->ppl = ppl;
     pleh->rblist = rbopenlist(ppl->prb);
 
     if(!pleh->rblist) {

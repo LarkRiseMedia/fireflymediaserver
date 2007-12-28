@@ -110,6 +110,7 @@ static void _conf_remap_entry(char *old_section, char *old_key, char **new_secti
 static CONF_ELEMENTS conf_elements[] = {
     { 1, 0, CONF_T_STRING,"general","runas" },
     { 1, 0, CONF_T_EXISTPATH,"general","web_root" },
+    { 1, 0, CONF_T_EXISTPATH,"general","cache_dir" },
     { 0, 0, CONF_T_INT,"general","port" },
     { 0, 0, CONF_T_STRING,"general","admin_pw" },
     { 1, 0, CONF_T_MULTIPATH,"general","mp3_dir" },
@@ -161,6 +162,7 @@ static CONF_MAP _conf_map[] = {
     { "general","process_m3u","scanning","process_playlists" },
     { "scanning","process_xml","scanning","process_itunes" },
     { "scan","correct_order","daap","correct_order" },
+    { "general","db_parms","general","cache_dir" },
 
     { NULL, NULL, NULL, NULL }
 };

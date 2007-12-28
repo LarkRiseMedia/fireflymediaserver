@@ -19,15 +19,6 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-/*
- * This file handles sqlite2 databases.  SQLite2 databases
- * should have a dsn of:
- *
- * sqlite2:/path/to/folder
- *
- * The actual db will be appended to the passed path.
- */
-
 #ifdef HAVE_CONFIG_H
 #  include "config.h"
 #endif
@@ -61,25 +52,35 @@
 #  define FALSE 0
 #endif
 
+typedef struct db_sqlite2_enum_helper_t {
+    const char *tail;
+    char *query;
+    sqlite_vm *pvm;
+} DB_SQLITE2_EH;
 
 /* Globals */
-static pthread_mutex_t db_sqlite2_mutex = PTHREAD_MUTEX_INITIALIZER; /**< sqlite not reentrant */
-static sqlite_vm *db_sqlite2_pvm;
+static pthread_mutex_t db_sqlite2_mutex;
+static pthread_mutexattr_t db_sqlite2_mutexattr;
 static pthread_key_t db_sqlite2_key;
 static char db_sqlite2_path[PATH_MAX + 1];
 extern char *db_sqlite2_initial;
 
 #define DB_SQLITE2_VERSION 14
 
-
 /* Forwards */
 static void db_sqlite2_lock(void);
 static void db_sqlite2_unlock(void);
-static int db_sqlite2_enum_begin_helper(char **pe);
+static int db_sqlite2_enum_begin_helper(char **pe, void *opaque);
 static int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...);
 static int db_sqlite2_insert_id(void);
-static int db_sqlite2_fetch_row(char **pe, char ***row, char *fmt, ...);
-static void db_sqlite2_dispose_row(char **row);
+static int db_sqlite2_fetch_row(char **pe, void **opaque, char ***row, char *fmt, ...);
+static void db_sqlite2_dispose_row(void *opaque);
+static void db_sqlite2_set_version(int version);
+static int db_sqlite2_enum_begin(char **pe, void **opaque, char *fmt, ...);
+static int db_sqlite2_enum_fetch(char **pe, void *opaque, char ***row);
+static int db_sqlite2_fetch_int(char **pe, int *ival, char *fmt, ...);
+
+extern char *db_sqlite_updates[];
 
 /**
  * insert a media object into the database
@@ -230,11 +231,11 @@ void db_sqlite2_freedb(sqlite *pdb) {
 void db_sqlite2_lock(void) {
     int err;
 
-    //    DPRINTF(E_SPAM,L_LOCK,"entering db_sqlite2_lock\n");
+    DPRINTF(E_SPAM,L_LOCK,"%08x: entering db_sqlite2_lock\n",util_get_threadid());
     if((err=pthread_mutex_lock(&db_sqlite2_mutex))) {
         DPRINTF(E_FATAL,L_DB,"cannot lock sqlite lock: %s\n",strerror(err));
     }
-    //    DPRINTF(E_SPAM,L_LOCK,"acquired db_sqlite2_lock\n");
+    DPRINTF(E_SPAM,L_LOCK,"%08x: acquired db_sqlite2_lock\n",util_get_threadid());
 }
 
 /**
@@ -243,13 +244,69 @@ void db_sqlite2_lock(void) {
 void db_sqlite2_unlock(void) {
     int err;
 
-    //    DPRINTF(E_SPAM,L_LOCK,"releasing db_sqlite2_lock\n");
+    DPRINTF(E_SPAM,L_LOCK,"%08x: releasing db_sqlite2_lock\n",util_get_threadid());
     if((err=pthread_mutex_unlock(&db_sqlite2_mutex))) {
         DPRINTF(E_FATAL,L_DB,"cannot unlock sqlite2 lock: %s\n",strerror(err));
     }
-    //    DPRINTF(E_SPAM,L_LOCK,"released db_sqlite2_lock\n");
+    DPRINTF(E_SPAM,L_LOCK,"%08x: released db_sqlite2_lock\n",util_get_threadid());
 }
 
+
+/**
+ * sets the db version of the current database in the db.version
+ * file in the cache_dir
+ *
+ * @param version version to set
+ */
+void db_sqlite2_set_version(int version) {
+    IOHANDLE handle;
+    char *cache_dir;
+
+    handle = io_new();
+    if(!handle) DPRINTF(E_FATAL,L_DB,"Can't alloc handle in set_version\n");
+
+    cache_dir = conf_alloc_string("general","cache_dir",NULL);
+    if(!cache_dir) DPRINTF(E_FATAL,L_DB,"general/cache_dir not set\n");
+
+    if(!io_open(handle,"file://%s/db.version?mode=w&ascii=1",cache_dir)) {
+        DPRINTF(E_FATAL,L_DB,"Can't open db.version: %s\n",io_errstr(handle));
+        free(cache_dir);
+    }
+
+    free(cache_dir);
+    io_printf(handle,"%d\n",version);
+    io_dispose(handle);
+}
+
+int db_sqlite2_fetch_int(char **pe, int *ival, char *fmt, ...) {
+    void *opaque;
+    char **row;
+    int err;
+    va_list ap;
+    char *query;
+    int result;
+
+    db_sqlite2_lock();
+    va_start(ap,fmt);
+    query = sqlite_vmprintf(fmt,ap);
+    va_end(ap);
+    db_sqlite2_unlock();
+
+    if(DB_E_SUCCESS != (err = db_sqlite2_fetch_row(pe, &opaque, &row, query))) {
+        sqlite_freemem(query);
+        return err;
+    }
+
+    db_sqlite2_lock();
+    sqlite_freemem(query);
+    db_sqlite2_unlock();
+
+    result = atoi(row[0]);
+    *ival = result;
+
+    db_sqlite2_dispose_row(opaque);
+    return err;
+}
 
 /**
  * returns the db version of the current database
@@ -257,7 +314,50 @@ void db_sqlite2_unlock(void) {
  * @returns db version
  */
 int db_sqlite2_db_version(void) {
-    return 0;
+    char *pe;
+    int version;
+    IOHANDLE handle;
+    char *cache_dir;
+    char linebuffer[20];
+    uint32_t bufferlen;
+
+    /* first, try and get it from the config table, if it exists */
+
+    if(DB_E_SUCCESS ==
+       db_sqlite2_fetch_int(&pe, &version,"select value from config where "
+                            "term='version'")) {
+        db_sqlite2_exec(NULL,E_DBG,"drop table config");
+        db_sqlite2_set_version(version);
+        return version;
+    } else {
+        if(pe) free(pe);
+    }
+
+    cache_dir = conf_alloc_string("general","cache_dir",NULL);
+    if(!cache_dir) return 0;
+
+    /* otherwise, read it from the db.version file */
+    handle = io_new();
+    if(!handle) return 0;
+
+    if(!io_open(handle,"file://%s/db.version?ascii=1",cache_dir)) {
+        free(cache_dir);
+        io_dispose(handle);
+        return 0;
+    }
+
+    free(cache_dir);
+
+    io_buffer(handle);
+    bufferlen = sizeof(linebuffer);
+    if(!io_readline(handle,(unsigned char *)linebuffer,&bufferlen)) {
+        version = 0;
+    } else {
+        version = atoi(linebuffer);
+    }
+
+    io_dispose(handle);
+    return version;
 }
 
 /**
@@ -265,73 +365,52 @@ int db_sqlite2_db_version(void) {
  * @param ppmo returns the result
  * @return DB_E_SUCCESS on success, error code with pe allocated otherwise
  */
-MEDIA_STRING *db_sqlite2_fetch_item(char **pe, uint32_t id) {
-    char **row = NULL;
-    int err;
-
-    if(DB_E_SUCCESS != (err = db_sqlite2_fetch_row(pe, &row, "select * from songs where id=%d",id)))
-        return NULL;
-
-    return (MEDIA_STRING *)row;
+int db_sqlite2_fetch_item(char **pe, uint32_t id, void **opaque, MEDIA_STRING **ppms) {
+    return db_sqlite2_fetch_row(pe, opaque, (char***)ppms, "select * from songs where id=%d",id);
 }
 
-int db_sqlite2_fetch_row(char **pe, char ***result, char *fmt, ...) {
+int db_sqlite2_fetch_row(char **pe, void **opaque, char ***row, char *fmt, ...) {
+    DB_SQLITE2_EH *peh;
     va_list ap;
-    char *query;
-    char **table;
     int err;
-    char *perr;
-    int nrow, ncolumn;
 
-    va_start(ap,fmt);
-    query=sqlite_vmprintf(fmt,ap);
-    va_end(ap);
+    peh = (DB_SQLITE2_EH*)malloc(sizeof(DB_SQLITE2_EH));
+
+    if(!peh) {
+        db_sqlite2_set_error(pe, DB_E_MALLOC);
+        return DB_E_MALLOC;
+    }
+
+    *opaque = peh;
 
     db_sqlite2_lock();
-    err = sqlite_get_table(db_sqlite2_handle(), query, &table,
-                           &nrow, &ncolumn, &perr);
-    if(err != SQLITE_OK) {
-        db_sqlite2_set_error(pe, DB_E_SQL_ERROR, perr);
-        DPRINTF(E_FATAL,L_DB,"Query: %s FAILED; %s\n",
-                query, perr);
-        db_sqlite2_unlock();
-    }
+    va_start(ap,fmt);
+    peh->query = sqlite_vmprintf(fmt,ap);
+    va_end(ap);
 
-    if(!nrow) {
-        DPRINTF(E_DBG,L_DB,"NULL fetch result: %x\n",*result);
-        sqlite_free_table(table);
-        *result = NULL;
-    } else {
-        *result = &table[ncolumn];
-    }
+    if(DB_E_SUCCESS != (err = db_sqlite2_enum_begin_helper(pe, *opaque)))
+        return err;
 
-    if(ncolumn != SG_LAST) {
-        DPRINTF(E_FATAL,L_DB,"Expecting row size to be %d, was %d\n",SG_LAST, ncolumn);
+    if(DB_E_SUCCESS != (err = db_sqlite2_enum_fetch(pe, *opaque, row))) {
+        db_sqlite2_enum_end(NULL, *opaque);
+        return err;
     }
-
-    sqlite_freemem(query);
-    db_sqlite2_unlock();
 
     return DB_E_SUCCESS;
 }
-
 
 /**
  * dispose of a row fetched via db_sqlite2_fetch
  *
  * @param ppms media object to destroy
  */
-void db_sqlite2_dispose_item(MEDIA_STRING *ppms) {
-    char **table = (char **)ppms;
-
-    /* sqlite with the stupid column of headers */
-    table -= SG_LAST;
-    db_sqlite2_dispose_row(table);
+void db_sqlite2_dispose_item(void *opaque, MEDIA_STRING *ppms) {
+    db_sqlite2_dispose_row(opaque);
 }
 
-void db_sqlite2_dispose_row(char **row) {
-    if(row)
-        sqlite_free_table(row);
+void db_sqlite2_dispose_row(void *opaque) {
+    if(opaque)
+        db_sqlite2_enum_end(NULL,opaque);
 }
 
 
@@ -347,9 +426,24 @@ void db_sqlite2_dispose_row(char **row) {
 int db_sqlite2_open(char **pe, char *dsn) {
     sqlite *pdb;
     char *perr;
+    char *db_dir;
+    int version;
+    int max_version;
+    int result;
+
+    pthread_mutexattr_init(&db_sqlite2_mutexattr);
+    pthread_mutexattr_settype(&db_sqlite2_mutexattr,PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&db_sqlite2_mutex,&db_sqlite2_mutexattr);
+
+    db_dir = conf_alloc_string("general","cache_dir",NULL);
+    if(!db_dir) {
+        db_sqlite2_set_error(pe,DB_E_NOPATH);
+        return DB_E_NOPATH;
+    }
 
     pthread_key_create(&db_sqlite2_key, (void*)db_sqlite2_freedb);
-    snprintf(db_sqlite2_path,sizeof(db_sqlite2_path),"%s/songs.db",dsn);
+    snprintf(db_sqlite2_path,sizeof(db_sqlite2_path),"%s/songs.db",db_dir);
+    free(db_dir);
 
     db_sqlite2_lock();
     pdb=sqlite_open(db_sqlite2_path,0666,&perr);
@@ -364,12 +458,34 @@ int db_sqlite2_open(char **pe, char *dsn) {
     sqlite_close(pdb);
     db_sqlite2_unlock();
 
-    db_sqlite2_exec(NULL,E_DBG,"pragma empty_result_callback 0");
-    if(db_sqlite2_db_version() != DB_SQLITE2_VERSION) {
+    version=db_sqlite2_db_version();
+
+    if(!version) {
         /* got to rescan */
+        DPRINTF(E_LOG,L_DB,"Can't determine db version.  Forcing a full update\n");
         db_sqlite2_exec(NULL,E_DBG,"drop table songs");
         db_sqlite2_exec(NULL,E_FATAL,db_sqlite2_initial);
+        version = DB_SQLITE2_VERSION;
+    } else if(version != DB_SQLITE2_VERSION) {
+        /* have to do the upgrade */
+        max_version = 0;
+        while(db_sqlite_updates[max_version]) max_version++;
+
+        DPRINTF(E_DBG,L_DB,"Current db version: %d\n",version);
+        DPRINTF(E_DBG,L_DB,"Target db version:  %d\n",max_version);
+
+        while(version < max_version) {
+            DPRINTF(E_LOG,L_DB,"Upgrading db: %d --> %d\n",version, version+1);
+            result = db_sqlite2_exec(pe,E_LOG,"%s",db_sqlite_updates[version]);
+            if(result != DB_E_SUCCESS) {
+                DPRINTF(E_FATAL,L_DB,"Error upgrading db: %s\n", pe ? *pe : "?");
+                return result;
+            }
+            version++;
+        }
     }
+
+    db_sqlite2_set_version(DB_SQLITE2_VERSION);
 
     return DB_E_SUCCESS;
 }
@@ -397,13 +513,13 @@ int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...) {
     int err;
     char *perr;
 
+    db_sqlite2_lock();
     va_start(ap,fmt);
     query=sqlite_vmprintf(fmt,ap);
     va_end(ap);
 
     DPRINTF(E_DBG,L_DB,"Executing: %s\n",query);
 
-    db_sqlite2_lock();
     err=sqlite_exec(db_sqlite2_handle(),query,NULL,NULL,&perr);
     if(err != SQLITE_OK) {
         db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
@@ -424,24 +540,51 @@ int db_sqlite2_exec(char **pe, int loglevel, char *fmt, ...) {
     return DB_E_SUCCESS;
 }
 
+
+/**
+ * start a db enumeration
+ */
+int db_sqlite2_enum_items_begin(char **pe, void **opaque) {
+    return db_sqlite2_enum_begin(pe,opaque,"select * from songs");
+}
+
 /**
  * walk a bunch of rows for a specific query
  */
-int db_sqlite2_enum_begin(char **pe) {
-    return db_sqlite2_enum_begin_helper(pe);
+int db_sqlite2_enum_begin(char **pe, void **opaque, char *fmt, ...) {
+    DB_SQLITE2_EH *peh;
+    va_list ap;
+
+    peh = (DB_SQLITE2_EH*)malloc(sizeof(DB_SQLITE2_EH));
+    if(!peh) {
+        db_sqlite2_set_error(pe, DB_E_MALLOC);
+        return DB_E_MALLOC;
+    }
+
+    *opaque = peh;
+
+    db_sqlite2_lock();
+
+
+    va_start(ap,fmt);
+    peh->query = sqlite_vmprintf(fmt,ap);
+    va_end(ap);
+
+    return db_sqlite2_enum_begin_helper(pe, *opaque);
 }
 
-int db_sqlite2_enum_begin_helper(char **pe) {
+int db_sqlite2_enum_begin_helper(char **pe, void *opaque) {
     int err;
     char *perr;
-    const char *ptail;
+    DB_SQLITE2_EH *peh = (DB_SQLITE2_EH*)opaque;
 
-    err=sqlite_compile(db_sqlite2_handle(),"select * from songs",
-                       &ptail,&db_sqlite2_pvm,&perr);
+    err=sqlite_compile(db_sqlite2_handle(),peh->query,
+                       &peh->tail,&peh->pvm,&perr);
     if(err != SQLITE_OK) {
+        peh->pvm = NULL;
         db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
         sqlite_freemem(perr);
-        db_sqlite2_unlock();
+        db_sqlite2_enum_end(NULL, peh);
         return DB_E_SQL_ERROR;
     }
 
@@ -449,6 +592,9 @@ int db_sqlite2_enum_begin_helper(char **pe) {
     return DB_E_SUCCESS;
 }
 
+int db_sqlite2_enum_items_fetch(char **pe, void *opaque, MEDIA_STRING **ppmo) {
+    return db_sqlite2_enum_fetch(pe,opaque,(char***)ppmo);
+}
 
 /**
  * fetch the next row
@@ -460,23 +606,25 @@ int db_sqlite2_enum_begin_helper(char **pe) {
  *          DB_E_SUCCESS with a valid row when more data,
  *          DB_E_* on error
  */
-int db_sqlite2_enum_fetch(char **pe, MEDIA_STRING **ppms) {
+int db_sqlite2_enum_fetch(char **pe, void *opaque, char ***row) {
     int err;
     char *perr=NULL;
     const char **colarray;
     int cols;
     int counter=10;
-    const char ***pr = (const char ***)ppms;
+    DB_SQLITE2_EH *peh;
+
+    peh = (DB_SQLITE2_EH*)opaque;
 
     while(counter--) {
-        err=sqlite_step(db_sqlite2_pvm,&cols,(const char ***)pr,&colarray);
+        err=sqlite_step(peh->pvm,&cols,(const char ***)row,&colarray);
         if(err != SQLITE_BUSY)
             break;
         usleep(100);
     }
 
     if(err == SQLITE_DONE) {
-        *pr = NULL;
+        *row = NULL;
         return DB_E_SUCCESS;
     }
 
@@ -491,16 +639,27 @@ int db_sqlite2_enum_fetch(char **pe, MEDIA_STRING **ppms) {
 /**
  * end the db enumeration
  */
-int db_sqlite2_enum_end(char **pe) {
+int db_sqlite2_enum_end(char **pe, void *opaque) {
     int err;
     char *perr;
+    DB_SQLITE2_EH *peh = (DB_SQLITE2_EH*)opaque;
 
-    err = sqlite_finalize(db_sqlite2_pvm,&perr);
-    if(err != SQLITE_OK) {
-        db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
-        sqlite_freemem(perr);
-        db_sqlite2_unlock();
-        return DB_E_SQL_ERROR;
+    if(peh) {
+        if(peh->query) {
+            sqlite_freemem(peh->query);
+            peh->query = NULL;
+        }
+
+        if(peh->pvm) {
+            err = sqlite_finalize(peh->pvm,&perr);
+            if(err != SQLITE_OK) {
+                db_sqlite2_set_error(pe,DB_E_SQL_ERROR,perr);
+                sqlite_freemem(perr);
+                db_sqlite2_unlock();
+                return DB_E_SQL_ERROR;
+            }
+        }
+        free(peh);
     }
 
     db_sqlite2_unlock();
@@ -508,10 +667,32 @@ int db_sqlite2_enum_end(char **pe) {
 }
 
 /**
+ * some db actions can be optimized by the db itself.
+ * this is particularly true on prescans, when
+ * the entire action can be wrapped in a transaction
+ *
+ * @param hint hint type (@see ff-dbstruct.h)
+ */
+void db_sqlite2_hint(int hint) {
+    return;
+
+    switch(hint) {
+    case DB_HINT_PRESCAN_START:
+        db_sqlite2_exec(NULL,E_LOG,"PRAGMA synchronous=off;PRAGMA temp_store=MEMORY;BEGIN;");
+
+        break;
+    case DB_HINT_PRESCAN_END:
+        db_sqlite2_exec(NULL,E_LOG,"END;PRAGMA synchronous=on;");
+        break;
+    }
+}
+
+
+/**
  * restart the enumeration
  */
-int db_sqlite2_enum_restart(char **pe) {
-    return db_sqlite2_enum_begin_helper(pe);
+int db_sqlite2_enum_restart(char **pe, void *opaque) {
+    return db_sqlite2_enum_begin_helper(pe, opaque);
 }
 
 /**
@@ -528,7 +709,7 @@ char *db_sqlite2_initial =
 "create table songs (\n"
 "   id              INTEGER PRIMARY KEY NOT NULL,\n"      /* 0 */
 "   path            VARCHAR(4096) NOT NULL,\n"
-"   fname           VARCHAR(255) NOT NULL,\n"
+"   fname           VARCHAR(255) DEFAULT NULL,\n"
 "   title           VARCHAR(1024) DEFAULT NULL,\n"
 "   artist          VARCHAR(1024) DEFAULT NULL,\n"
 "   album           VARCHAR(1024) DEFAULT NULL,\n"        /* 5 */

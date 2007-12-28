@@ -64,19 +64,21 @@ typedef struct tag_plugin_db_fn {
 
     // proper db functions
     int(*db_add)(char **, MEDIA_NATIVE *);
-    int(*db_enum_start)(char **);
-    int(*db_enum_fetch)(char **, MEDIA_STRING **);
-    int(*db_enum_reset)(char **);
-    int(*db_enum_end)(char**);
+    int(*db_enum_start)(char **, void **);
+    int(*db_enum_fetch)(char **, void *, MEDIA_STRING **);
+    int(*db_enum_reset)(char **, void *);
+    int(*db_enum_end)(char**, void *);
 
-    MEDIA_STRING *(*db_fetch_item)(char **, uint32_t);
-    void (*db_dispose_item)(MEDIA_STRING *);
+    void(*db_hint)(int);
 
+    int (*db_fetch_item)(char **, uint32_t, void **, MEDIA_STRING **);
+    void (*db_dispose_item)(void *, MEDIA_STRING *);
 } PLUGIN_DB_FN;
 
 typedef struct enum_helper_t {
     PLENUMHANDLE handle;
     char **result;
+    void *opaque;
     char *composite_query;
     uint32_t old_playlist;
 
@@ -91,6 +93,25 @@ typedef struct enum_helper_t {
     int(*enum_fetch)(char **, char ***, DB_QUERY *);
 } ENUMHELPER;
 
+typedef struct db_cache_entry_t {
+    MEDIA_NATIVE *pmn;
+    struct db_cache_entry_t *next;
+    struct db_cache_entry_t *prev;
+} DB_CACHE_ENTRY;
+
+typedef struct db_cache_list_t {
+    int max_length;
+    int current_length;
+    DB_CACHE_ENTRY cache_list;
+    DB_CACHE_ENTRY *tail;
+} DB_CACHE_LIST;
+
+typedef struct db_path_node_t {
+    char *path;
+    uint32_t index;
+    uint32_t id;
+} DB_PATH_NODE;
+
 #define MAYBEFREE(a) if((a)) free((a));
 
 /* Globals */
@@ -98,6 +119,8 @@ static int db_revision_no=2;                          /**< current revision of t
 static pthread_once_t db_initlock=PTHREAD_ONCE_INIT;  /**< to initialize the rwlock */
 static pthread_rwlock_t db_rwlock;                    /**< pthread r/w sync for the database */
 static PLUGIN_DB_FN *db_pfn = NULL;                   /**< link to db plugin funcs */
+static DB_CACHE_LIST db_cache_list = { 32, 0, { NULL, NULL }, NULL};
+static struct rbtree *db_path_lookup;
 
 /* This could arguably go somewhere else, but we'll put it here  */
 #define OFFSET_OF(__type, __field)      ((size_t) (&((__type*) 0)->__field))
@@ -166,7 +189,8 @@ char *db_error_list[] = {
     "Malloc error",
     "Path not found",
     "Internal pthreads error",
-    "Playlist error: %s"
+    "Playlist error: %s",
+    "general/cache_dir not specified",
 };
 
 /* Forwards */
@@ -194,10 +218,190 @@ static int db_enum_items_fetch(char **pe, char ***result, DB_QUERY *pquery);
 static int db_enum_playlist_fetch(char **pe, char ***result, DB_QUERY *pquery);
 static int db_enum_browse_fetch(char **pe, char ***result, DB_QUERY *pquery);
 
+/* db cache layer */
+static MEDIA_NATIVE *db_cache_fetch(char **pe, uint32_t id);
+static void db_cache_update(MEDIA_NATIVE *pmn);
+static void db_cache_promote(DB_CACHE_ENTRY *pentry);
+static void db_cache_insert(MEDIA_NATIVE *pmn);
+static DB_CACHE_ENTRY *db_cache_find(int id);
+static void db_cache_dispose_item(MEDIA_NATIVE *pmo);
+
+
+/* path-to-id mapping */
+static int db_path_compare(const void *p1, const void *p2, const void *arg);
+
+/* lock-free functions */
+MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
 
 #define DB_STR_COPY(field) pnew->field=db_util_strdup(pmos->field)
 #define DB_INT32_COPY(field) pnew->field=db_util_atoui32(pmos->field)
 #define DB_INT64_COPY(field) pnew->field=db_util_atoui64(pmos->field)
+
+
+
+void db_cache_dump(void) {
+    DB_CACHE_ENTRY *pentry;
+
+    return;
+
+    DPRINTF(E_DBG,L_DB,"db_cache_list.cache_list: %08x\n",&db_cache_list.cache_list);
+    DPRINTF(E_DBG,L_DB,"db_cache_list.cache_list.next: %08x\n",db_cache_list.cache_list.next);
+    DPRINTF(E_DBG,L_DB,"db_cache_list.tail: %08x\n",db_cache_list.tail);
+    DPRINTF(E_DBG,L_DB,"\n");
+
+    pentry = db_cache_list.cache_list.next;
+    while(pentry) {
+        DPRINTF(E_DBG,L_DB,"ID: %d: %08x\n",pentry->pmn->id,pentry);
+        DPRINTF(E_DBG,L_DB,"  prev: %08x\n",pentry->prev);
+        DPRINTF(E_DBG,L_DB,"  next: %08x\n",pentry->next);
+        DPRINTF(E_DBG,L_DB,"\n");
+        pentry=pentry->next;
+    }
+}
+
+/*
+ * caching functions.
+ */
+DB_CACHE_ENTRY *db_cache_find(int id) {
+    DB_CACHE_ENTRY *pentry;
+
+    //    DPRINTF(E_DBG,L_DB,"Finding %d in cache\n",id);
+    pentry = db_cache_list.cache_list.next;
+    while(pentry) {
+        if(id == pentry->pmn->id)
+            return pentry;
+        pentry = pentry->next;
+    }
+    return NULL;
+}
+
+void db_cache_insert(MEDIA_NATIVE *pmn) {
+    DB_CACHE_ENTRY *pentry;
+
+    //    DPRINTF(E_DBG,L_DB,"Adding %d to cache. Current size: %d\n",pmn->id,db_cache_list.current_length);
+    pentry = (DB_CACHE_ENTRY *)malloc(sizeof(DB_CACHE_ENTRY));
+    if(!pentry)
+        return;
+
+    pentry->pmn = pmn;
+
+    pentry->prev = &db_cache_list.cache_list;
+    pentry->next = db_cache_list.cache_list.next;
+    db_cache_list.cache_list.next = pentry;
+
+    if(pentry->next) {
+        pentry->next->prev = pentry;
+    } else {
+        db_cache_list.tail = pentry;
+    }
+
+    /* maybe delete last */
+    if(db_cache_list.current_length == db_cache_list.max_length) {
+        /* gotta delete */
+        pentry = db_cache_list.tail;
+        db_cache_list.tail = db_cache_list.tail->prev;
+        db_cache_list.tail->next = NULL;
+        db_cache_dispose_item(pentry->pmn);
+        free(pentry);
+        db_cache_list.current_length--;
+    }
+
+    db_cache_list.current_length++;
+}
+
+/*
+ * move a cache entry to the front of the list
+ */
+void db_cache_promote(DB_CACHE_ENTRY *pentry) {
+    //    DPRINTF(E_DBG,L_DB,"promoting %d in cache\n",pentry->pmn->id);
+
+    if(pentry == db_cache_list.cache_list.next) {
+        return;
+    }
+
+    if(pentry == db_cache_list.tail)
+        db_cache_list.tail = pentry->prev;
+
+    if(pentry->next)
+        pentry->next->prev = pentry->prev;
+    pentry->prev->next = pentry->next;
+
+    pentry->next = db_cache_list.cache_list.next;
+    pentry->prev = &db_cache_list.cache_list;
+
+    if(pentry->next)
+        pentry->next->prev = pentry;
+
+    db_cache_list.cache_list.next = pentry;
+}
+
+void db_cache_update(MEDIA_NATIVE *pmn) {
+    MEDIA_NATIVE *pmn_new, *pmn_existing;
+    DB_CACHE_ENTRY *pcache;
+    int field;
+    int offset;
+    void *pold, *pnew;
+
+    //    DPRINTF(E_DBG,L_DB,"write-through cache update of %d\n",pmn->id);
+    for(field = 0; field < SG_LAST; field++) {
+        memcpy(pmn_new,pmn,sizeof(MEDIA_NATIVE));
+
+        switch(ff_field_data[field].type) {
+        case FT_STRING:
+            offset = ff_field_data[field].offset;
+            pold = (void*)((pmn) + offset);
+            pnew = (void*)((pmn_new) + offset);
+
+            *((char**)pnew) = strdup(*((char**)pold));
+            break;
+        }
+    }
+
+    util_mutex_lock(l_pl);
+    /* got a new copy of the pmn */
+    pcache = db_cache_find(pmn->id);
+    if(pcache) {
+        /* promote and update */
+        db_cache_promote(pcache);
+        pmn_existing = pcache->pmn;
+        pcache->pmn = pmn_new;
+        db_cache_dispose_item(pmn_existing);
+    } else {
+        /* just add */
+        db_cache_insert(pmn_new);
+    }
+    util_mutex_unlock(l_pl);
+}
+
+MEDIA_NATIVE *db_cache_fetch(char **pe, uint32_t id) {
+    DB_CACHE_ENTRY *pentry;
+    MEDIA_NATIVE *pmn = NULL;
+    MEDIA_STRING *pms;
+    void *opaque;
+
+    util_mutex_lock(l_pl);
+    db_cache_dump();
+
+    /* first, see if it is in the cache */
+
+    config.stats.db_id_fetches++;
+
+    pentry = db_cache_find(id);
+    if(pentry) {
+        config.stats.db_id_hits++;
+        pmn = pentry->pmn;
+        db_cache_promote(pentry);
+    } else {
+        if(DB_E_SUCCESS == db_pfn->db_fetch_item(pe, id, &opaque, &pms)) {
+            pmn = db_string_to_native(pms);
+            db_pfn->db_dispose_item(opaque, pms);
+            db_cache_insert(pmn);
+        }
+    }
+    db_cache_dump();
+    util_mutex_unlock(l_pl);
+    return pmn;
+}
 
 /*
  * db_readlock
@@ -303,24 +507,16 @@ int db_open(char **pe, char *type, char *parameters) {
         db_pfn->db_open = db_sqlite2_open;
         db_pfn->db_close = db_sqlite2_close;
         db_pfn->db_add = db_sqlite2_add;
-        db_pfn->db_enum_start = db_sqlite2_enum_begin;
-        db_pfn->db_enum_fetch = db_sqlite2_enum_fetch;
+        db_pfn->db_enum_start = db_sqlite2_enum_items_begin;
+        db_pfn->db_enum_fetch = db_sqlite2_enum_items_fetch;
         db_pfn->db_enum_reset = db_sqlite2_enum_restart;
         db_pfn->db_enum_end = db_sqlite2_enum_end;
         db_pfn->db_fetch_item = db_sqlite2_fetch_item;
         db_pfn->db_dispose_item = db_sqlite2_dispose_item;
+        db_pfn->db_hint = db_sqlite2_hint;
     }
 #endif
 #ifdef HAVE_LIBSQLITE3
-    if(0 == strcasecmp(type,"sqlite3")) {
-        db_pfn->db_open = db_sqlite3_open;
-        db_pfn->db_close = db_sqlite3_close;
-        db_pfn->db_add = db_sqlite3_add;
-        db_pfn->db_enum_start = db_sqlite3_enum_begin;
-        db_pfn->db_enum_fetch = db_sqlite3_enum_fetch;
-        db_pfn->db_enum_reset = db_sqlite3_enum_restart;
-        db_pfn->db_enum_end = db_sqlite3_enum_end;
-    }
 #endif
 
     if(!db_pfn) {
@@ -332,6 +528,36 @@ int db_open(char **pe, char *type, char *parameters) {
 
     DPRINTF(E_DBG,L_DB,"Results: %d\n",result);
     return result;
+}
+
+/**
+ * send a hint to the underlying database, so it can
+ * potentially optimize upcoming transactions
+ *
+ * @param hint hint to send (@see ff-dbstruct.h)
+ */
+void db_hint(int hint) {
+    if(db_pfn->db_hint)
+        db_pfn->db_hint(hint);
+}
+
+static int db_path_compare(const void *p1, const void *p2, const void *arg) {
+    DB_PATH_NODE *ppn1, *ppn2;
+    int result;
+
+    ppn1 = (DB_PATH_NODE*)p1;
+    ppn2 = (DB_PATH_NODE*)p2;
+
+    result = strcmp(ppn1->path, ppn2->path);
+    if(result)
+        return result;
+
+    if(ppn1->index < ppn2->index)
+        return -1;
+    if(ppn1->index > ppn2->index)
+        return 1;
+
+    return 0;
 }
 
 /**
@@ -348,7 +574,10 @@ int db_init(int reload) {
     char *pe;
     MEDIA_STRING *pmo;
     uint32_t m_id;
+    DB_PATH_NODE *pnew;
+    void *opaque;
 
+    /* this should arguably be done in pl_init, rather than here */
     pl_add_playlist(&pe,"Library",PL_STATICWEB,NULL,NULL,0,&id);
     if(id != 1) {
         DPRINTF(E_FATAL,L_DB,"Can't add library playlist: %s\n",pe);
@@ -356,28 +585,44 @@ int db_init(int reload) {
     }
 
     /* walk through and add all the items */
-    if(DB_E_SUCCESS != (result = db_pfn->db_enum_start(&pe))) {
+    if(DB_E_SUCCESS != (result = db_pfn->db_enum_start(&pe,&opaque))) {
         DPRINTF(E_FATAL,L_DB,"Error populating initial playlist: %s\n",pe);
         free(pe);
         return result;
     }
 
+    db_path_lookup = rbinit(db_path_compare, NULL);
+
     /* FIXME: assumes string return */
-    while((DB_E_SUCCESS == (result=db_pfn->db_enum_fetch(&pe, &pmo))) && pmo) {
+    while((DB_E_SUCCESS == (result=db_pfn->db_enum_fetch(&pe, opaque, &pmo))) && pmo) {
         /* got a row */
+
+        /* add to path map */
+        pnew = (DB_PATH_NODE*)malloc(sizeof(DB_PATH_NODE));
+        if(!pnew)
+            DPRINTF(E_FATAL,L_DB,"Malloc error allocating path map entry\n");
+
+        pnew->path = strdup(pmo->path);
+        pnew->index = db_util_atoui32(pmo->idx);
+        pnew->id = db_util_atoui32(pmo->id);
+
+        if(!rbsearch((const void*)pnew, db_path_lookup)) {
+            DPRINTF(E_FATAL,L_DB,"Can't insert into path map\n");
+        }
+
         m_id = db_util_atoui32(pmo->id);
         if(m_id) {
             if(PL_E_SUCCESS != (result = pl_add_playlist_item(&pe, 1, m_id))) {
                 DPRINTF(E_LOG,L_DB,"Error inserting item into library: %s\n",
                         pe);
                 free(pe);
-                db_pfn->db_enum_end(NULL);
+                db_pfn->db_enum_end(NULL,opaque);
                 return result;
             }
         }
     }
 
-    db_pfn->db_enum_end(NULL);
+    db_pfn->db_enum_end(NULL,opaque);
     return DB_E_SUCCESS;
 }
 
@@ -389,6 +634,14 @@ int db_revision(void) {
     return db_revision_no;
 }
 
+/**
+ * add a media item to the database.  This needs to also
+ * invalidate the cache on adds, but doesn't, currently.
+ *
+ * @param pe error string buffer
+ * @param pmo media object
+ * @returns DB_E_SUCCESS on success, error code on failure with pe allocated
+ */
 int db_add(char **pe, MEDIA_NATIVE *pmo) {
     int result;
 
@@ -414,6 +667,10 @@ int db_add(char **pe, MEDIA_NATIVE *pmo) {
         db_unlock();
         return result;
     }
+
+    /* write through the cache */
+    //    db_cache_update(pmo);
+
     return DB_E_SUCCESS;
 }
 
@@ -672,6 +929,7 @@ int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
      * fetch
      */
     while(1) {
+        config.stats.db_enum_fetches++;
         err = peh->enum_fetch(pe, result, pquery);
         if((peh->current_position >= pquery->offset) ||
            (err != DB_E_SUCCESS) ||
@@ -688,11 +946,12 @@ int db_enum_fetch(char **pe, char ***result, DB_QUERY *pquery) {
 int db_enum_items_fetch(char **pe, char ***result, DB_QUERY *pquery) {
     uint32_t id;
     ENUMHELPER *peh;
+    int err;
 
     peh = (ENUMHELPER*)pquery->priv;
 
     if(peh->result) {
-        db_pfn->db_dispose_item((MEDIA_STRING*)peh->result);
+        db_pfn->db_dispose_item(peh->opaque, (MEDIA_STRING*)peh->result);
         peh->result = NULL;
     }
 
@@ -702,10 +961,12 @@ int db_enum_items_fetch(char **pe, char ***result, DB_QUERY *pquery) {
         return DB_E_SUCCESS;
     }
 
-    /* fetch the item */
-    config.stats.db_fetches++;
-    peh->result = (char**)db_pfn->db_fetch_item(pe, id);
-    *result = peh->result;
+    /* fetch the item -- won't cache this */
+    config.stats.db_enum_fetches++;
+    if(DB_E_SUCCESS == (err = db_pfn->db_fetch_item(pe, id, &peh->opaque, (MEDIA_STRING **)&peh->result))) {
+        *result = peh->result;
+    }
+
     return DB_E_SUCCESS;
 }
 
@@ -916,21 +1177,18 @@ void db_dispose_playlist(PLAYLIST_NATIVE *ppln) {
  * @returns MEDIA_STRING* if successful, NULL otherwise
  */
 MEDIA_NATIVE *db_fetch_item(char **pe, int id) {
-    MEDIA_STRING *pstring;
     MEDIA_NATIVE *pnative;
 
-    pstring = db_pfn->db_fetch_item(pe, id);
-    if(!pstring)
-        return NULL;
-
-    config.stats.db_fetches++;
-
-    /* otherwise, convert to native format */
-    pnative = db_string_to_native(pstring);
-    db_pfn->db_dispose_item(pstring);
-
+    db_readlock();
+    pnative = db_fetch_item_nolock(pe, id);
+    db_unlock();
     return pnative;
 }
+
+MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id) {
+    return db_cache_fetch(pe,id);
+}
+
 
 /**
  * get a media object by path
@@ -941,9 +1199,19 @@ MEDIA_NATIVE *db_fetch_item(char **pe, int id) {
  * @returns media object on success, NULL with pe allocated otherwise
  */
 MEDIA_NATIVE *db_fetch_path(char **pe, char *path, int index) {
-    /* this lookups into path cache... */
+    DB_PATH_NODE path_node;
+    DB_PATH_NODE *pnode;
 
-    return NULL;
+    /* this lookups into path cache... */
+    path_node.path = path;
+    path_node.index = index;
+
+    pnode = (DB_PATH_NODE*)rbfind((void*)&path_node,db_path_lookup);
+    if(!pnode) {
+        return NULL;
+    }
+
+    return db_fetch_item(pe, pnode->id);
 }
 
 /**
@@ -959,8 +1227,7 @@ int db_playcount_increment(char **pe, int id) {
 
     db_writelock();
 
-    config.stats.db_fetches++;
-    pold = db_fetch_item(pe, id);
+    pold = db_fetch_item_nolock(pe, id);
     if(!pold) {
         db_unlock();
         return DB_E_DB_ERROR;
@@ -1037,12 +1304,16 @@ int db_get_playlist_count(char **pe, int *count) {
     return DB_E_SUCCESS;
 }
 
+void db_dispose_item(MEDIA_NATIVE *pmo) {
+    return;
+}
+
 /**
  * dispose of a item fetched by db_fetch_item
  *
  * @param pmo media object to dispose
  */
-void db_dispose_item(MEDIA_NATIVE *pmo) {
+void db_cache_dispose_item(MEDIA_NATIVE *pmo) {
     ASSERT(pmo);
 
     if(!pmo)

@@ -56,6 +56,13 @@ typedef unsigned __int64 uint64_t;
  * listen:
  *  backlog=<n> (default to 5)
  *  reuse=0/1 (defaults to 1) - SO_REUSEADDR
+ *
+ * file:
+ *  ascii=1 (linefeed conversions from windows)
+ *  mode=(r|r+|w|w+|a|a+) @see fopen
+ *  permissions=octal unix style, useless on windows
+ *
+ * %U is urlencoded on open sprintf format
  */
 
 extern int io_init(void);

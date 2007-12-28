@@ -30,13 +30,13 @@ extern int db_sqlite2_close(void);
 extern int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo);
 
 /* walk through a table */
-extern int db_sqlite2_enum_begin(char **pe);
-extern int db_sqlite2_enum_fetch(char **pe, MEDIA_STRING **ppmo);
-extern int db_sqlite2_enum_end(char **pe);
-extern int db_sqlite2_enum_restart(char **pe);
-extern MEDIA_STRING *db_sqlite2_fetch_item(char **pe, uint32_t id);
-extern void db_sqlite2_dispose_item(MEDIA_STRING *ppms);
-
+extern int db_sqlite2_enum_items_begin(char **pe, void **opaque);
+extern int db_sqlite2_enum_items_fetch(char **pe, void *opaque, MEDIA_STRING **ppmo);
+extern int db_sqlite2_enum_end(char **pe, void *opaque);
+extern int db_sqlite2_enum_restart(char **pe, void *opaque);
+extern int db_sqlite2_fetch_item(char **pe, uint32_t id, void **opaque, MEDIA_STRING **ppms);
+extern void db_sqlite2_dispose_item(void *opaque, MEDIA_STRING *ppms);
+extern void db_sqlite2_hint(int hint);
 
 #endif /* _DB_SQL_SQLITE2_ */
 

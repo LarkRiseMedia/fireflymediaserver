@@ -53,11 +53,11 @@ extern void db_dispose_playlist(PLAYLIST_NATIVE *ppln);
 extern MEDIA_NATIVE *db_fetch_item(char **pe, int id);
 extern MEDIA_NATIVE *db_fetch_path(char **pe, char *path, int index);
 
+extern void db_hint(int hint);
 
 /* Holdover functions from old db interface...
  * should these be removed?  Refactored?
  */
-
 extern int db_playcount_increment(char **pe, int id);
 extern int db_get_song_count(char **pe, int *count);
 extern int db_get_playlist_count(char **pe, int *count);
@@ -85,5 +85,5 @@ extern char *db_error_list[];
 #define DB_E_NOTFOUND                0x0F /**< path not found */
 #define DB_E_PTHREAD                 0x10 /**< pthreads error */
 #define DB_E_PLAYLIST                0x11 /**< playlist error */
-
+#define DB_E_NOPATH                  0x12 /**< cache_dir not specified */
 #endif /* _DB_GENERIC_H_ */

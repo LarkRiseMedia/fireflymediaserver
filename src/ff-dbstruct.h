@@ -239,4 +239,10 @@ extern FIELD_LOOKUP ff_field_data[];
 #define PL_SMART      0x24
 #define PL_FOLDER     0x05
 
+/* DB hints */
+#define DB_HINT_PRESCAN_START  1
+#define DB_HINT_PRESCAN_END    2
+#define DB_HINT_FULLSCAN_START 3
+#define DB_HINT_FULLSCAN_END   4
+
 #endif /* _FF_DBSTRUCT_H_ */

@@ -1048,7 +1048,7 @@ int scan_get_wmainfo(char *filename, MP3FILE *pmp3) {
 
         pguid = wma_find_guid(subhdr.objectid);
         if(pguid) {
-            DPRINTF(E_DBG,L_SCAN,"%ll: Found subheader: %s\n",
+            DPRINTF(E_DBG,L_SCAN,"%lld: Found subheader: %s\n",
                     offset,pguid->name);
             if(strcmp(pguid->name,"ASF_Content_Description_Object")==0) {
                 res &= wma_parse_content_description(hfile,(int)subhdr.size,pmp3);

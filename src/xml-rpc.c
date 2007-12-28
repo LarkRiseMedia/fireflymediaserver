@@ -626,8 +626,10 @@ void xml_get_stats(WS_CONNINFO *pwsc) {
     xml_pop(pxml); /* stat */
 
     xml_push(pxml,"stat");
-    xml_output(pxml,"name","DB Fetches");
-    xml_output(pxml,"value","%d",config.stats.db_fetches);
+    xml_output(pxml,"name","DB Info");
+    xml_output(pxml,"value","%d enums, %d hits on %d fetches, %02f%%",config.stats.db_enum_fetches,
+               config.stats.db_id_hits, config.stats.db_id_fetches,
+               (float)config.stats.db_id_hits/(float)config.stats.db_id_fetches * 100.0);
     xml_pop(pxml); /* stat */
 
     xml_pop(pxml); /* statistics */
