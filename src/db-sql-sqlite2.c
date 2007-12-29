@@ -96,6 +96,8 @@ int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
     int offset;
     int err;
 
+    db_sqlite2_lock();
+
     if(pmo->id) {
         /* update query */
         sql = util_asprintf("update songs set ");
@@ -164,6 +166,7 @@ int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
                 sql = util_aasprintf(sql," values (");
         }
     }
+    db_sqlite2_unlock();
 
     if(DB_E_SUCCESS == (err = db_sqlite2_exec(pe, E_FATAL, "%s", sql))) {
         pmo->id = (uint32_t)db_sqlite2_insert_id();
@@ -222,7 +225,9 @@ sqlite *db_sqlite2_handle(void) {
  * free a thread-specific db handle
  */
 void db_sqlite2_freedb(sqlite *pdb) {
+    db_sqlite2_lock();
     sqlite_close(pdb);
+    db_sqlite2_unlock();
 }
 
 /**
@@ -231,11 +236,11 @@ void db_sqlite2_freedb(sqlite *pdb) {
 void db_sqlite2_lock(void) {
     int err;
 
-    DPRINTF(E_SPAM,L_LOCK,"%08x: entering db_sqlite2_lock\n",util_get_threadid());
+    //    DPRINTF(E_SPAM,L_LOCK,"%08x: entering db_sqlite2_lock\n",util_get_threadid());
     if((err=pthread_mutex_lock(&db_sqlite2_mutex))) {
         DPRINTF(E_FATAL,L_DB,"cannot lock sqlite lock: %s\n",strerror(err));
     }
-    DPRINTF(E_SPAM,L_LOCK,"%08x: acquired db_sqlite2_lock\n",util_get_threadid());
+    //    DPRINTF(E_SPAM,L_LOCK,"%08x: acquired db_sqlite2_lock\n",util_get_threadid());
 }
 
 /**
@@ -244,11 +249,11 @@ void db_sqlite2_lock(void) {
 void db_sqlite2_unlock(void) {
     int err;
 
-    DPRINTF(E_SPAM,L_LOCK,"%08x: releasing db_sqlite2_lock\n",util_get_threadid());
+    //    DPRINTF(E_SPAM,L_LOCK,"%08x: releasing db_sqlite2_lock\n",util_get_threadid());
     if((err=pthread_mutex_unlock(&db_sqlite2_mutex))) {
         DPRINTF(E_FATAL,L_DB,"cannot unlock sqlite2 lock: %s\n",strerror(err));
     }
-    DPRINTF(E_SPAM,L_LOCK,"%08x: released db_sqlite2_lock\n",util_get_threadid());
+    //    DPRINTF(E_SPAM,L_LOCK,"%08x: released db_sqlite2_lock\n",util_get_threadid());
 }
 
 
@@ -293,7 +298,9 @@ int db_sqlite2_fetch_int(char **pe, int *ival, char *fmt, ...) {
     db_sqlite2_unlock();
 
     if(DB_E_SUCCESS != (err = db_sqlite2_fetch_row(pe, &opaque, &row, query))) {
+        db_sqlite2_lock();
         sqlite_freemem(query);
+        db_sqlite2_unlock();
         return err;
     }
 

@@ -728,7 +728,7 @@ int db_enum_start(char **pe, DB_QUERY *pinfo) {
         peh->old_playlist = pinfo->playlist_id;
 
         /* got the new query in pinfo->query, now set up a hidden playlist */
-        name = util_asprintf("%x-%s",util_get_threadid(), &pinfo);
+        name = util_asprintf("temp-%x-%p",util_get_threadid(), &pinfo);
 
         err = pl_add_playlist(&e_pl, name, PL_SMART | PL_HIDDEN,
                               peh->composite_query, NULL, 0,
@@ -1243,6 +1243,8 @@ int db_playcount_increment(char **pe, int id) {
             return err;
         }
     }
+
+    /* FIXME: Advise playlists and update cache.  Call db_add? */
 
     db_unlock();
     return DB_E_SUCCESS;

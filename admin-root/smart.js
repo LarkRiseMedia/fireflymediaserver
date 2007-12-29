@@ -87,7 +87,7 @@ function pl_update() {
     
     if(id == '0') {
         /* new playlist... post it! */
-        var url = 'databases/1/containers/add?output=xml&org.mt-daapd.playlist-type=1&dmap.itemname=' + name + '&org.mt-daapd.smart-playlist-spec=' + spec;
+        var url = 'databases/1/containers/add?output=xml&org.mt-daapd.playlist-type=36&dmap.itemname=' + name + '&org.mt-daapd.smart-playlist-spec=' + spec;
         result = pl_exec(url,false);
     } else {
         var url='databases/1/containers/edit?output=xml&dmap.itemid=' + id + '&dmap.itemname=' + name + '&org.mt-daapd.smart-playlist-spec=' + spec;

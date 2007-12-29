@@ -1592,15 +1592,16 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
     }
 
     // Actually check the node
+    offset = ff_field_data[node->field_id].offset;
+
     if(node->op_type == SP_OPTYPE_STRING) {
         if(!is_native) {
             tmp = (char **)pms;
             val_string = tmp[node->field_id];
             val_string = tmp[node->field_id] ? tmp[node->field_id] : "";
-
         } else {
-            val_string = (char*) (((void*)pmn)
-                                  + pl_offsets[node->field_id]);
+            val_string = *(char**)(((void*)pmn)+offset);
+            if(!val_string) val_string = "";
         }
 
         switch(node->op) {
@@ -1636,8 +1637,7 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
             else
                 val_uint32 = 0;
         } else {
-            val_uint32 = *((uint32_t*) (((void*)pmn)
-                                        + pl_offsets[node->field_id]));
+            val_uint32 = *((uint32_t*)(((void*)pmn)+offset));
         }
         switch(node->op) {
         case T_LESSEQUAL:
@@ -1672,8 +1672,7 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
             else
                 val_uint64 = 0;
         } else {
-            val_uint64 = *((uint64_t*) (((void*)pmn)
-                                        + pl_offsets[node->field_id]));
+            val_uint64 = *((uint64_t*)(((void*)pmn)+offset));
         }
         switch(node->op) {
         case T_LESSEQUAL:
@@ -1708,8 +1707,7 @@ int sp_node_matches(SP_NODE *node, MEDIA_STRING *pms, MEDIA_NATIVE *pmn) {
             else
                 val_date = 0;
         } else {
-            val_date = *((uint32_t*) (((void*)pmn)
-                                        + pl_offsets[node->field_id]));
+            val_date = *((uint32_t*)(((void*)pmn) + offset));
         }
         switch(node->op) {
         case T_LESSEQUAL:

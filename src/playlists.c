@@ -85,10 +85,14 @@ char *pl_error_list[] = {
     "Invalid parameter passed",
 };
 
+static PLAYLIST *pl_find(uint32_t id);
 static void pl_set_error(char **pe, int error, ...);
 static void pl_purge(PLAYLIST *ppl);
 static int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid);
 static int pl_contains_item(uint32_t pl_id, uint32_t song_id);
+
+/* here's a nice hack... */
+MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
 
 /**
  * push error text into the error buffer passed by the calling function
@@ -167,11 +171,13 @@ int pl_compare(const void *v1, const void *v2, const void *vso) {
  * @param
  */
 int pl_update_smart(char **pe, PLAYLIST *ppl) {
-    DB_QUERY dbq;
-    MEDIA_STRING *pms;
+    MEDIA_NATIVE *pmn;
     int err;
     uint32_t song_id;
+    uint32_t *pid;
     char *e_db;
+    PLAYLIST *plibrary;
+    RBLIST *rblist;
 
     ASSERT((ppl) && (ppl->ppln) && (ppl->ppln->type & PL_DYNAMIC));
 
@@ -180,47 +186,36 @@ int pl_update_smart(char **pe, PLAYLIST *ppl) {
 
     pl_purge(ppl);
 
-    /* if it's a smart playlist, should bulk update the playlist */
-    /* FIXME: use the passed filter if the underlying db supports queries */
-    memset((void*)&dbq,0,sizeof(dbq));
+    plibrary = pl_find(1);
+    if(!plibrary)
+        return PL_E_SUCCESS;
 
-    dbq.query_type = QUERY_TYPE_ITEMS;
-    dbq.filter_type = FILTER_TYPE_NONE;
-    dbq.offset = 0;
-    dbq.limit = INT_MAX;
-    dbq.playlist_id = 1;
+    rblist = rbopenlist(plibrary->prb);
+    if(!rblist)
+        return PL_E_SUCCESS;
 
-    if((err=db_enum_start(&e_db,&dbq)) != DB_E_SUCCESS) {
-        DPRINTF(E_LOG,L_PL,"Enum start error: %s\n",e_db);
-        pl_set_error(pe,PL_E_DBERROR,e_db);
-        if(e_db) free(e_db);
-        return PL_E_DBERROR;
-    }
+    while(NULL != (pid = (uint32_t*)rbreadlist(rblist))) {
+        song_id = *pid;
+        pmn = db_fetch_item_nolock(&e_db, song_id);
+        if(!pmn) {
+            rbcloselist(rblist);
+            pl_set_error(pe,PL_E_DBERROR,e_db);
+            free(e_db);
+            return PL_E_DBERROR;
+        }
 
-    /* now fetch each and see if it applies to this playlist */
-    DPRINTF(E_DBG,L_PL,"Walking database...\n");
-    while((DB_E_SUCCESS == (err = db_enum_fetch(&e_db, (char ***)&pms, &dbq))) && (pms)) {
-        song_id = strtoul(pms->id,NULL,10);
-
-        if(sp_matches_string(ppl->pt, pms)) {
+        if(sp_matches_native(ppl->pt, pmn)) {
             if(PL_E_SUCCESS != (err = pl_add_playlist_item(pe, ppl->ppln->id, song_id))) {
                 DPRINTF(E_DBG,L_PL,"can't add item to playlist\n");
-                db_enum_end(NULL,&dbq);
+                rbcloselist(rblist);
                 return err;
             }
         }
     }
 
-    db_enum_end(NULL,&dbq);
+    rbcloselist(rblist);
 
-    if(err != DB_E_SUCCESS) {
-        pl_set_error(pe,PL_E_DBERROR,e_db);
-        DPRINTF(E_LOG,L_PL,"DB Error updating smart playlist: %s\n",e_db);
-        free(e_db);
-        return PL_E_DBERROR;
-    }
-
-    DPRINTF(E_DBG,L_PL,"Updated smart playlist\n");
+    DPRINTF(E_DBG,L_PL,"Updated smart playlist: items: %d\n",ppl->ppln->items);
     return PL_E_SUCCESS;
 }
 
@@ -458,7 +453,7 @@ int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid)
 
     /* make sure it's a valid song id */
     /* FIXME: replace this with a db_exists type function */
-    pmn = db_fetch_item(NULL,songid);
+    pmn = db_fetch_item_nolock(NULL,songid);
     if(!pmn) {
         DPRINTF(E_DBG,L_PL,"Can't find song in add_item\n");
         pl_set_error(pe,PL_E_BADSONGID,songid);
