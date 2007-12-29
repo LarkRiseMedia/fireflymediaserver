@@ -95,6 +95,7 @@ typedef struct enum_helper_t {
 
 typedef struct db_cache_entry_t {
     MEDIA_NATIVE *pmn;
+    int refcount;
     struct db_cache_entry_t *next;
     struct db_cache_entry_t *prev;
 } DB_CACHE_ENTRY;
@@ -119,7 +120,7 @@ static int db_revision_no=2;                          /**< current revision of t
 static pthread_once_t db_initlock=PTHREAD_ONCE_INIT;  /**< to initialize the rwlock */
 static pthread_rwlock_t db_rwlock;                    /**< pthread r/w sync for the database */
 static PLUGIN_DB_FN *db_pfn = NULL;                   /**< link to db plugin funcs */
-static DB_CACHE_LIST db_cache_list = { 32, 0, { NULL, NULL }, NULL};
+static DB_CACHE_LIST db_cache_list = { 32, 0, { NULL, 0, NULL, NULL }, NULL};
 static struct rbtree *db_path_lookup;
 
 /* This could arguably go somewhere else, but we'll put it here  */
@@ -285,6 +286,7 @@ void db_cache_insert(MEDIA_NATIVE *pmn) {
 
     pentry->pmn = pmn;
 
+    pentry->refcount = 1;
     pentry->prev = &db_cache_list.cache_list;
     pentry->next = db_cache_list.cache_list.next;
     db_cache_list.cache_list.next = pentry;
@@ -296,7 +298,8 @@ void db_cache_insert(MEDIA_NATIVE *pmn) {
     }
 
     /* maybe delete last */
-    if(db_cache_list.current_length == db_cache_list.max_length) {
+    while((db_cache_list.current_length >= db_cache_list.max_length) &&
+          (db_cache_list.tail->refcount == 0)) {
         /* gotta delete */
         pentry = db_cache_list.tail;
         db_cache_list.tail = db_cache_list.tail->prev;
@@ -391,6 +394,7 @@ MEDIA_NATIVE *db_cache_fetch(char **pe, uint32_t id) {
         config.stats.db_id_hits++;
         pmn = pentry->pmn;
         db_cache_promote(pentry);
+        pentry->refcount++;
     } else {
         if(DB_E_SUCCESS == db_pfn->db_fetch_item(pe, id, &opaque, &pms)) {
             pmn = db_string_to_native(pms);
@@ -401,6 +405,53 @@ MEDIA_NATIVE *db_cache_fetch(char **pe, uint32_t id) {
     db_cache_dump();
     util_mutex_unlock(l_pl);
     return pmn;
+}
+
+/**
+ * decrement refcount on a media object
+ *
+ * @param pmo media object to dec refcount
+ */
+void db_dispose_item(MEDIA_NATIVE *pmo) {
+    DB_CACHE_ENTRY *pentry;
+
+    util_mutex_lock(l_pl);
+
+    pentry = db_cache_find(pmo->id);
+    if(pentry)
+        pentry->refcount--;
+
+    util_mutex_unlock(l_pl);
+}
+
+/**
+ * *really* dispose of a item fetched by db_fetch_item
+ *
+ * @param pmo media object to dispose
+ */
+void db_cache_dispose_item(MEDIA_NATIVE *pmo) {
+    ASSERT(pmo);
+
+    if(!pmo)
+        return;
+
+    MAYBEFREE(pmo->path);
+    MAYBEFREE(pmo->fname);
+    MAYBEFREE(pmo->title);
+    MAYBEFREE(pmo->artist);
+    MAYBEFREE(pmo->album);
+    MAYBEFREE(pmo->genre);
+    MAYBEFREE(pmo->comment);
+    MAYBEFREE(pmo->type);
+    MAYBEFREE(pmo->composer);
+    MAYBEFREE(pmo->orchestra);
+    MAYBEFREE(pmo->conductor);
+    MAYBEFREE(pmo->grouping);
+    MAYBEFREE(pmo->description);
+    MAYBEFREE(pmo->url);
+    MAYBEFREE(pmo->codectype);
+    MAYBEFREE(pmo->album_artist);
+    free(pmo);
 }
 
 /*
@@ -1304,40 +1355,6 @@ int db_get_playlist_count(char **pe, int *count) {
 
     db_unlock();
     return DB_E_SUCCESS;
-}
-
-void db_dispose_item(MEDIA_NATIVE *pmo) {
-    return;
-}
-
-/**
- * dispose of a item fetched by db_fetch_item
- *
- * @param pmo media object to dispose
- */
-void db_cache_dispose_item(MEDIA_NATIVE *pmo) {
-    ASSERT(pmo);
-
-    if(!pmo)
-        return;
-
-    MAYBEFREE(pmo->path);
-    MAYBEFREE(pmo->fname);
-    MAYBEFREE(pmo->title);
-    MAYBEFREE(pmo->artist);
-    MAYBEFREE(pmo->album);
-    MAYBEFREE(pmo->genre);
-    MAYBEFREE(pmo->comment);
-    MAYBEFREE(pmo->type);
-    MAYBEFREE(pmo->composer);
-    MAYBEFREE(pmo->orchestra);
-    MAYBEFREE(pmo->conductor);
-    MAYBEFREE(pmo->grouping);
-    MAYBEFREE(pmo->description);
-    MAYBEFREE(pmo->url);
-    MAYBEFREE(pmo->codectype);
-    MAYBEFREE(pmo->album_artist);
-    free(pmo);
 }
 
 /**
