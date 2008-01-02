@@ -420,6 +420,7 @@ int _conf_verify(LL_HANDLE pll) {
     CONF_ELEMENTS *pce;
     int is_valid=TRUE;
     char resolved_path[PATH_MAX];
+    char *ppath;
     char *user;
 
     /* first, walk through the elements and make sure
@@ -480,6 +481,23 @@ int _conf_verify(LL_HANDLE pll) {
 
     /* here we would walk through derived sections, if there
      * were any */
+
+    /* do fixups for cache_dir -- make the playlist directory */
+    user = "nobody";
+    ptemp = _conf_fetch_item(pll, "general", "runas");
+    if(ptemp) {
+        user = ptemp->value.as_string;
+    }
+
+    ptemp = _conf_fetch_item(pll,"general","cache_dir");
+    if(ptemp) {
+        ppath = util_asprintf("%s/playlists",ptemp->value.as_string);
+        if(!ppath) DPRINTF(E_FATAL,L_CONF,"malloc error\n");
+        if(!_conf_makedir(ppath,user)) {
+            DPRINTF(E_FATAL,L_CONF,"Can't make playlist dir: %s\n",ppath);
+        }
+        free(ppath);
+    }
 
     return is_valid;
 }

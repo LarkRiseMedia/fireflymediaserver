@@ -33,6 +33,7 @@ extern int db_deinit(void);
 extern int db_revision(void);
 
 extern int db_add(char **pe, MEDIA_NATIVE *pmo);
+extern int db_del(char **pe, uint32_t id);
 
 /* enumerate db items (songs) */
 extern int db_enum_start(char **pe, DB_QUERY *pquery);
@@ -86,4 +87,5 @@ extern char *db_error_list[];
 #define DB_E_PTHREAD                 0x10 /**< pthreads error */
 #define DB_E_PLAYLIST                0x11 /**< playlist error */
 #define DB_E_NOPATH                  0x12 /**< cache_dir not specified */
+#define DB_E_NOTIMPL                 0x13 /**< backend doesn't implement */
 #endif /* _DB_GENERIC_H_ */

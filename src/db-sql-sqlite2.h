@@ -28,6 +28,7 @@ extern int db_sqlite2_close(void);
 
 /* add a media object */
 extern int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo);
+extern int db_sqlite2_del(char **pe, uint32_t id);
 
 /* walk through a table */
 extern int db_sqlite2_enum_items_begin(char **pe, void **opaque);

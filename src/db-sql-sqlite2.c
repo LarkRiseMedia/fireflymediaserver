@@ -82,6 +82,18 @@ static int db_sqlite2_fetch_int(char **pe, int *ival, char *fmt, ...);
 
 extern char *db_sqlite_updates[];
 
+
+/**
+ * delete a media object by id
+ *
+ * @param pe error buffer
+ * @param id id of media object to delete
+ * @returns DB_E_SUCCESS on success, error on failure with pe allocated
+ */
+int db_sqlite2_del(char **pe, uint32_t id) {
+    return db_sqlite2_exec(pe,E_LOG,"delete from songs where id=%d",id);
+}
+
 /**
  * insert a media object into the database
  *

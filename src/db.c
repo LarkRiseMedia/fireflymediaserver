@@ -64,6 +64,7 @@ typedef struct tag_plugin_db_fn {
 
     // proper db functions
     int(*db_add)(char **, MEDIA_NATIVE *);
+    int(*db_del)(char **, uint32_t);
     int(*db_enum_start)(char **, void **);
     int(*db_enum_fetch)(char **, void *, MEDIA_STRING **);
     int(*db_enum_reset)(char **, void *);
@@ -109,6 +110,7 @@ typedef struct db_cache_list_t {
 
 typedef struct db_path_node_t {
     char *path;
+    int fetched;
     uint32_t index;
     uint32_t id;
 } DB_PATH_NODE;
@@ -192,6 +194,7 @@ char *db_error_list[] = {
     "Internal pthreads error",
     "Playlist error: %s",
     "general/cache_dir not specified",
+    "Backend db does not implement that function",
 };
 
 /* Forwards */
@@ -233,6 +236,7 @@ static int db_path_compare(const void *p1, const void *p2, const void *arg);
 
 /* lock-free functions */
 MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
+int db_del_nolock(char **pe, uint32_t id);
 
 #define DB_STR_COPY(field) pnew->field=db_util_strdup(pmos->field)
 #define DB_INT32_COPY(field) pnew->field=db_util_atoui32(pmos->field)
@@ -558,6 +562,7 @@ int db_open(char **pe, char *type, char *parameters) {
         db_pfn->db_open = db_sqlite2_open;
         db_pfn->db_close = db_sqlite2_close;
         db_pfn->db_add = db_sqlite2_add;
+        db_pfn->db_del = db_sqlite2_del;
         db_pfn->db_enum_start = db_sqlite2_enum_items_begin;
         db_pfn->db_enum_fetch = db_sqlite2_enum_items_fetch;
         db_pfn->db_enum_reset = db_sqlite2_enum_restart;
@@ -588,8 +593,47 @@ int db_open(char **pe, char *type, char *parameters) {
  * @param hint hint to send (@see ff-dbstruct.h)
  */
 void db_hint(int hint) {
+    RBLIST *rblist;
+    DB_PATH_NODE *pnode, *pnext;
+
     if(db_pfn->db_hint)
         db_pfn->db_hint(hint);
+
+    switch(hint) {
+    case DB_HINT_FULLSCAN_START:
+        db_writelock();
+        rblist = rbopenlist(db_path_lookup);
+        if(rblist) {
+            while(NULL != (pnode = (DB_PATH_NODE*)rbreadlist(rblist))) {
+                pnode->fetched=0;
+            }
+            rbcloselist(rblist);
+        } else {
+            DPRINTF(E_LOG,L_DB,"Can't open path lookup for tree traversal\n");
+        }
+        db_unlock();
+        break;
+
+    case DB_HINT_FULLSCAN_END:
+        db_writelock();
+        pnode=(DB_PATH_NODE*)rblookup(RB_LUFIRST, NULL, db_path_lookup);
+        while(pnode) {
+            pnext = (DB_PATH_NODE*)rblookup(RB_LUGREAT, (void*)pnode, db_path_lookup);
+            if(!pnode->fetched) {
+                DPRINTF(E_INF,L_DB,"File disappeared: %s\n", pnode->path);
+                db_del_nolock(NULL,pnode->id);
+                rbdelete(pnode, db_path_lookup);
+                free(pnode->path);
+                free(pnode);
+            }
+            pnode = pnext;
+        }
+        db_unlock();
+        break;
+
+    default:
+        break;
+    }
 }
 
 static int db_path_compare(const void *p1, const void *p2, const void *arg) {
@@ -656,6 +700,7 @@ int db_init(int reload) {
         pnew->path = strdup(pmo->path);
         pnew->index = db_util_atoui32(pmo->idx);
         pnew->id = db_util_atoui32(pmo->id);
+        pnew->fetched = 0;
 
         if(!rbsearch((const void*)pnew, db_path_lookup)) {
             DPRINTF(E_FATAL,L_DB,"Can't insert into path map\n");
@@ -723,6 +768,28 @@ int db_add(char **pe, MEDIA_NATIVE *pmo) {
     //    db_cache_update(pmo);
 
     return DB_E_SUCCESS;
+}
+
+int db_del(char **pe, uint32_t id) {
+    int result;
+
+    db_writelock();
+    result = db_del_nolock(pe, id);
+    db_unlock();
+    return result;
+}
+
+int db_del_nolock(char **pe, uint32_t id) {
+    int result = DB_E_NOTIMPL;
+
+    if(db_pfn->db_del) {
+        result = db_pfn->db_del(pe, id);
+    }
+
+    if(DB_E_SUCCESS == result)
+        pl_advise_del(id);
+
+    return result;
 }
 
 /**
@@ -1261,6 +1328,9 @@ MEDIA_NATIVE *db_fetch_path(char **pe, char *path, int index) {
     if(!pnode) {
         return NULL;
     }
+
+    // Mark node as fetched in case we are in a scan
+    pnode->fetched = 1;
 
     return db_fetch_item(pe, pnode->id);
 }

@@ -42,8 +42,8 @@
 
 typedef struct plenumhandle_t *PLENUMHANDLE;
 
-extern int pl_init(void);
-extern int pl_deinit(void);
+extern int pl_init(char **pe);
+extern int pl_deinit(char **pe);
 
 extern int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, int index, uint32_t *id);
 extern int pl_add_playlist_item(char **pe, uint32_t playlistid, uint32_t songid);
@@ -68,6 +68,7 @@ extern void pl_enum_end(PLENUMHANDLE pleh);
 
 /* Advise functions, specific to the db functions */
 extern void pl_advise_add(MEDIA_NATIVE *pmn);
+extern void pl_advise_del(uint32_t id);
 
 #endif /* _PLAYLISTS_H_ */
 

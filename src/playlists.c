@@ -30,6 +30,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "conf.h"
 #include "daapd.h"
 #include "db.h"
 #include "err.h"
@@ -86,6 +87,7 @@ char *pl_error_list[] = {
 };
 
 static PLAYLIST *pl_find(uint32_t id);
+static void pl_save(PLAYLIST *ppl);
 static void pl_set_error(char **pe, int error, ...);
 static void pl_purge(PLAYLIST *ppl);
 static int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid);
@@ -93,6 +95,96 @@ static int pl_contains_item(uint32_t pl_id, uint32_t song_id);
 
 /* here's a nice hack... */
 MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
+
+/**
+ * load a playlist.
+ */
+int pl_load(char *filename) {
+    PLAYLIST_NATIVE *ppln;
+    PLAYLIST *ppl;
+    HANDLE handle;
+
+    DPRINTF(E_INF,L_PL,"Loading playlist %s\n",filename);
+    handle = io_new();
+    if(!handle) DPRINTF(E_FATAL,L_PL,"malloc error in pl_load\n");
+
+    if(!io_open(handle,"file://%U?mode=r&ascii=1", filename)) {
+        DPRINTF(E_LOG,L_PL,"Can't open %s: %s\n",filename,io_errstr(handle));
+        io_dispose(handle);
+        return FALSE;
+    }
+
+    ppln = (PLAYLIST_NATIVE *)malloc(sizeof(PLAYLIST_NATIVE));
+    ppl = (PLAYLIST*)malloc(sizeof(PLAYLIST));
+
+    if((!ppln) || (!ppl)) DPRINTF(E_FATAL,L_PL,"malloc error in pl_load\n");
+
+    memset(ppln,0,sizeof(PLAYLIST_NATIVE));
+    memset(ppl,0,sizeof(PLAYLIST));
+
+    ppl->ppln = ppln;
+
+    // load up the file...
+
+    io_dispose(handle);
+    return TRUE;
+}
+
+
+void pl_save(PLAYLIST *ppl) {
+    PLAYLIST_NATIVE *ppln = ppl->ppln;
+    char *ppath;
+    char *pcache_dir;
+    IOHANDLE handle;
+    RBLIST *rblist;
+    uint32_t *pid;
+    uint32_t song_id;
+
+    if(ppln->id == 1) // don't bother saving the library playlist
+        return;
+
+    if(ppln->type & PL_HIDDEN)
+        return;
+
+    pcache_dir = conf_alloc_string("general","cache_dir",NULL);
+    if(pcache_dir) {
+        ppath = util_asprintf("%s/playlists/%s.playlist",pcache_dir,ppln->title);
+        free(pcache_dir);
+
+        handle = io_new();
+        if(handle) {
+            if(io_open(handle,"file://%U?ascii=1&mode=w",ppath)) {
+                io_buffer(handle);
+                io_printf(handle,"# Auto-saved playlist - timestamp:  %d\n\n",time(NULL));
+                io_printf(handle,"id:%u\n",ppln->id);
+                io_printf(handle,"name:%s\n",ppln->title);
+                io_printf(handle,"type:%d\n",ppln->type);
+                if(ppln->query)
+                    io_printf(handle,"query:%s\n",ppln->query);
+                io_printf(handle,"timestamp:%d\n",ppln->db_timestamp);
+                if(ppln->path)
+                    io_printf(handle,"path:%s\n",ppln->path);
+                io_printf(handle,"idx:%d\n",ppln->idx);
+
+                io_printf(handle,"\n# Item list\n\n");
+
+                rblist = rbopenlist(ppl->prb);
+                if(rblist) {
+                    while(NULL != (pid = (uint32_t*)rbreadlist(rblist))) {
+                        song_id = *pid;
+                        io_printf(handle,"%u\n",song_id);
+                    }
+                    rbcloselist(rblist);
+                }
+            } else {
+                DPRINTF(E_LOG,L_PL,"Can't write playlist: %s\n",ppath);
+            }
+            io_dispose(handle);
+        }
+            free(ppath);
+    }
+}
+
 
 /**
  * push error text into the error buffer passed by the calling function
@@ -362,6 +454,8 @@ int pl_add_playlist(char **pe, char *name, int type, char *query, char *path, in
 
     DPRINTF(E_DBG,L_PL,"Added playlist as %d\n",ppln->id);
 
+    pl_save(pnew);
+
     //util_mutex_unlock(l_pl);
     return PL_E_SUCCESS;
 }
@@ -620,33 +714,21 @@ int pl_delete_playlist_item(char **pe, uint32_t playlistid, uint32_t songid) {
     uint32_t *pid;
     PLAYLIST *ppl;
 
-    ASSERT(playlistid != 1);
-
-    if(playlistid == 1) {
-        pl_set_error(pe,PL_E_BADPLID,playlistid);
-        return PL_E_BADPLID;
-    }
-
-    //util_mutex_lock(l_pl);
-
     /* find the playlist by id */
     ppl = pl_find(playlistid);
     if(!ppl) {
-        //util_mutex_unlock(l_pl);
         pl_set_error(pe, PL_E_NOTFOUND, playlistid);
         return PL_E_NOTFOUND;
     }
 
     pid = (uint32_t*)rbdelete((void*)&songid,ppl->prb);
     if(!pid) {
-        //util_mutex_unlock(l_pl);
         pl_set_error(pe,PL_E_BADSONGID,songid);
         return PL_E_BADSONGID;
     }
 
     ppl->ppln->items--;
 
-    //util_mutex_unlock(l_pl);
     return PL_E_SUCCESS;
 }
 
@@ -1029,10 +1111,45 @@ void pl_advise_add(MEDIA_NATIVE *pmn) {
 
     /* walk through all the playlists, adding them if necessary */
     while(ppl) {
-        if((1 == ppl->ppln->id) ||
-           ((ppl->ppln->type & PL_DYNAMIC) &&
-            (sp_matches_native(ppl->pt, pmn))))
+        if((ppl->ppln->id) && (!is_edit))
             pl_add_playlist_item(NULL, 1, pmn->id);
+        else if((!is_edit) && (ppl->ppln->type & PL_DYNAMIC) && (sp_matches_native(ppl->pt, pmn)))
+            pl_add_playlist_item(NULL, ppl->ppln->id, pmn->id);
+        else if((is_edit) && (ppl->ppln->type & PL_DYNAMIC) && (!sp_matches_native(ppl->pt, pmn)))
+            pl_delete_playlist_item(NULL, ppl->ppln->id, pmn->id);
+
         ppl = ppl->next;
     }
 }
+
+/**
+ * warning from the db driver that an item has been deleted from the
+ * database
+ */
+void pl_advise_del(uint32_t id) {
+    PLAYLIST *ppl;
+
+    ppl = pl_list.next;
+
+    while(ppl) {
+        if(pl_contains_item(ppl->ppln->id, id))
+            pl_delete_playlist_item(NULL, ppl->ppln->id, id);
+        ppl = ppl->next;
+    }
+}
+
+
+/**
+ * set up the playlists
+ *
+ * @returns DB_E_SUCCESS on success, failure code & pe allocated otherwise
+ */
+int pl_init(char **pe) {
+    return DB_E_SUCCESS;
+}
+
+int pl_deinit(char **pe) {
+    return DB_E_SUCCESS;
+}
+
+

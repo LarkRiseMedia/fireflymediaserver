@@ -274,6 +274,8 @@ int scan_init(char **patharray) {
 
     DPRINTF(E_DBG,L_SCAN,"Starting scan_init\n");
 
+    db_hint(DB_HINT_FULLSCAN_START);
+
     /*
     if(db_start_scan()) {
         DPRINTF(E_DBG,L_SCAN,"Error in db_start_scan()\n");
@@ -289,6 +291,8 @@ int scan_init(char **patharray) {
         err=scan_path(resolved_path);
         index++;
     }
+
+    db_hint(DB_HINT_FULLSCAN_END);
 
     if(util_must_exit()) // || db_end_song_scan())
         return -1;
@@ -634,7 +638,8 @@ void scan_filename(char *path, int compdir, char *extensions) {
                     } else {
                         DPRINTF(E_DBG,L_SCAN,"Skipping file, not modified\n");
                     }
-                    db_dispose_item(pmp3);
+                    if(pmp3)
+                        db_dispose_item(pmp3);
                 }
             }
         }
