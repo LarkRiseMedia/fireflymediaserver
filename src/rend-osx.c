@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <pwd.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sys/types.h>
 
 #include <libc.h>
@@ -36,14 +37,17 @@
 #include "daapd.h"
 #include "err.h"
 #include "os-unix.h"
-#include "rend-unix.h"
+#include "rend.h"
 
 CFRunLoopRef rend_runloop;
 CFRunLoopSourceRef rend_rls;
 pthread_t rend_tid;
 
+#define MAX_TEXT_LEN 255
+
 /* Forwards */
 void *rend_pipe_monitor(void* arg);
+void *rend_runloop_threadproc(void* arg);
 
 /*
  * rend_stoprunloop
@@ -109,36 +113,6 @@ static void rend_reply(DNSServiceRegistrationReplyErrorType errorCode, void *con
     }
 }
 
-/*
- * rend_pipe_monitor
- */
-void *rend_pipe_monitor(void* arg) {
-    fd_set rset;
-    int result;
-
-
-    while(1) {
-        DPRINTF(E_DBG,L_REND,"Waiting for data\n");
-        FD_ZERO(&rset);
-        FD_SET(rend_pipe_to[RD_SIDE],&rset);
-
-        /* sit in a select spin until there is data on the to fd */
-        while(((result=select(rend_pipe_to[RD_SIDE] + 1,&rset,NULL,NULL,NULL)) != -1) &&
-            errno != EINTR) {
-            if(FD_ISSET(rend_pipe_to[RD_SIDE],&rset)) {
-                DPRINTF(E_DBG,L_REND,"Received a message from daap server\n");
-                CFRunLoopSourceSignal(rend_rls);
-                CFRunLoopWakeUp(rend_runloop);
-                sleep(1);  /* force a reschedule, hopefully */
-            }
-        }
-
-        DPRINTF(E_DBG,L_REND,"Select error!\n");
-        /* should really bail here */
-    }
-}
-
-
 /**
  * Add a text stanza to the buffer (pascal-style multistring)
  *
@@ -151,29 +125,27 @@ void rend_add_text(char *buffer, char *string) {
     strcpy(ptr+1,string);
 }
 
-/*
- * rend_callback
- *
- * This gets called from the main thread when there is a
- * message waiting to be processed.
- */
-void rend_callback(void *info) {
-    REND_MESSAGE msg;
+int rend_running(void) {
+    return TRUE;
+}
+
+int rend_stop(void) {
+    rend_stoprunloop();
+    pthread_join(rend_tid,NULL);
+
+    return 1;
+}
+
+int rend_register(char *name, char *type, int port, char *ifact, char *txt) {
     unsigned short usPort;
     dns_service_discovery_ref dns_ref=NULL;
     char *src,*dst;
     int len;
 
-    /* here, we've seen the message, now we have to process it */
-    if(rend_read_message(&msg) != sizeof(msg)) {
-        DPRINTF(E_FATAL,L_REND,"Rendezvous socket closed (daap server crashed?)  Aborting.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    src=dst=msg.txt;
-    while(src && (*src) && (src - msg.txt < MAX_TEXT_LEN)) {
+    src=dst=txt;
+    while(src && (*src) && (src - txt < MAX_TEXT_LEN)) {
         len = (*src);
-        if((src + len + 1) - msg.txt < MAX_TEXT_LEN) {
+        if((src + len + 1) - txt < MAX_TEXT_LEN) {
             memmove(dst,src+1,len);
             dst += len;
             if(*src) {
@@ -185,75 +157,80 @@ void rend_callback(void *info) {
         src += len + 1;
     }
 
-    switch(msg.cmd) {
-    case REND_MSG_TYPE_REGISTER:
-        DPRINTF(E_DBG,L_REND,"Registering %s.%s (%d)\n",msg.type,msg.name,msg.port);
-        usPort=htons(msg.port);
-        dns_ref=DNSServiceRegistrationCreate(msg.name,msg.type,"",usPort,msg.txt,rend_reply,nil);
-        if(rend_addtorunloop(dns_ref)) {
-            DPRINTF(E_WARN,L_REND,"Add to runloop failed\n");
-            rend_send_response(-1);
-        } else {
-            rend_send_response(0); /* success */
-        }
-        break;
-    case REND_MSG_TYPE_UNREGISTER:
-        DPRINTF(E_WARN,L_REND,"Unsupported function: UNREGISTER\n");
-        rend_send_response(-1); /* error */
-        break;
-    case REND_MSG_TYPE_STOP:
-        DPRINTF(E_DBG,L_REND,"Stopping mDNS\n");
-        rend_send_response(0);
-        rend_stoprunloop();
-        break;
-    case REND_MSG_TYPE_STATUS:
-        DPRINTF(E_DBG,L_REND,"Status inquiry -- returning 1\n");
-        rend_send_response(1); /* success */
-        break;
-    default:
-        break;
+    DPRINTF(E_DBG,L_REND,"Registering %s.%s (%d)\n",type,name,port);
+    usPort=htons(port);
+    dns_ref=DNSServiceRegistrationCreate(name,type,"",usPort,txt,rend_reply,nil);
+    if(rend_addtorunloop(dns_ref)) {
+        DPRINTF(E_WARN,L_REND,"Add to runloop failed\n");
+        return -1;
+    } else {
+        return 0;
     }
 }
+
+/**
+ * not implemeneted
+ *
+ * @param name name of service to unregistery
+ * @param type type of service to unregister
+ * @param port port of service to nregister
+ */
+int rend_unregister(char *name, char *type, int port) {
+    return -1;
+}
+
+
+/**
+ * execute the runloop
+ *
+ * @param arg unused
+ */
+void *rend_runloop_threadproc(void* arg) {
+    CFRunLoopSourceContext context;
+
+    rend_runloop = CFRunLoopGetCurrent();
+    rend_rls = CFRunLoopSourceCreate(NULL,0,&context);
+    CFRunLoopAddSource(CFRunLoopGetCurrent(),rend_rls,kCFRunLoopDefaultMode);
+
+    DPRINTF(E_DBG,L_REND,"Starting runloop\n");
+    CFRunLoopRun();
+    DPRINTF(E_DBG,L_REND,"Exiting runloop\n");
+
+    CFRelease(rend_rls);
+
+    return NULL;
+}
+
 
 /*
  * rend_private_init
  *
  * start up the rendezvous services
  */
-int rend_private_init(char *user) {
-    CFRunLoopSourceContext context;
+int rend_init(char *user) {
+    sigset_t set;
 
-    if(os_drop_privs(user)) /* shouldn't be running as root anyway */
+    if((sigemptyset(&set) == -1) ||
+       (sigaddset(&set,SIGINT) == -1) ||
+       (sigaddset(&set,SIGHUP) == -1) ||
+       (sigaddset(&set,SIGCHLD) == -1) ||
+       (sigaddset(&set,SIGTERM) == -1) ||
+       (sigaddset(&set,SIGPIPE) == -1) ||
+       (pthread_sigmask(SIG_BLOCK, &set, NULL) == -1)) {
+        DPRINTF(E_LOG,L_MAIN,"Error setting signal set\n");
         return -1;
+    }
 
-    /* need a sigint handler */
     DPRINTF(E_DBG,L_REND,"Starting rendezvous services\n");
 
-    memset((void*)&context,0,sizeof(context));
-    context.perform = rend_callback;
+    DPRINTF(E_DBG,L_REND,"Starting runloop thread\n");
 
-    rend_runloop = CFRunLoopGetCurrent();
-    rend_rls = CFRunLoopSourceCreate(NULL,0,&context);
-    CFRunLoopAddSource(CFRunLoopGetCurrent(),rend_rls,kCFRunLoopDefaultMode);
-
-    DPRINTF(E_DBG,L_REND,"Starting polling thread\n");
-
-    if(pthread_create(&rend_tid,NULL,rend_pipe_monitor,NULL)) {
+    if(pthread_create(&rend_tid,NULL,rend_runloop_threadproc,NULL)) {
         DPRINTF(E_FATAL,L_REND,"Could not start thread.  Terminating\n");
         /* should kill parent, too */
         exit(EXIT_FAILURE);
     }
 
-    DPRINTF(E_DBG,L_REND,"Starting runloop\n");
-
-    CFRunLoopRun();
-
-    DPRINTF(E_DBG,L_REND,"Exiting runloop\n");
-
-    CFRelease(rend_rls);
-    pthread_cancel(rend_tid);
-    close(rend_pipe_to[RD_SIDE]);
-    close(rend_pipe_from[WR_SIDE]);
     return 0;
 }
 

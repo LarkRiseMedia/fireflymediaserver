@@ -19,7 +19,7 @@ HRENDSRC=rend-howl.c rend-unix.c
 endif
 
 if COND_REND_OSX
-ORENDSRC=rend-osx.c rend-unix.c
+ORENDSRC=rend-osx.c
 endif
 
 if COND_REND_AVAHI
