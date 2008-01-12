@@ -26,25 +26,8 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifdef HAVE_CONFIG_H
-# include "config.h"
-#endif
 
-#include <ctype.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <id3tag.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#ifdef HAVE_DIRENT_H
-# include <dirent.h>
-#endif
-#ifndef WIN32
-# include <netinet/in.h>  /* htons and friends */
-#endif
-#include <sys/stat.h>
+#include "includes.h"
 
 #include "daapd.h"
 #include "conf.h"

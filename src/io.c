@@ -64,6 +64,8 @@
 # define closesocket close
 #endif
 
+#define MAX_LINESIZE    8192
+
 #ifdef WIN32
 typedef struct tag_io_waithandle {
     DWORD dwLastResult;
@@ -117,7 +119,12 @@ int io_buffer(IO_PRIVHANDLE *phandle);
 int io_readline(IO_PRIVHANDLE *phandle, unsigned char *buf, uint32_t *len);
 int io_readline_timeout(IO_PRIVHANDLE *phandle, unsigned char *buf,
                       uint32_t *len, uint32_t *ms);
+int io_allocline(IO_PRIVHANDLE *phandle, unsigned char **buf);
+int io_allocline_timeout(IO_PRIVHANDLE *phandle, unsigned char **buf, uint32_t *ms);
+
 char *io_errstr(IO_PRIVHANDLE *phandle);
+uint32_t io_errcode(IO_PRIVHANDLE *phandle);
+
 void io_dispose(IO_PRIVHANDLE *phandle);
 
 void io_set_errhandler(void(*err_handler)(int, char*));
@@ -166,6 +173,7 @@ static void io_lock(void);
 static void io_unlock(void);
 static int io_urldecode(char *); /**< do an in-place decode */
 static int io_option_add(IO_PRIVHANDLE *phandle, char *key, char *value);
+static int io_option_remove(IO_PRIVHANDLE *phandle, char *key);
 static int io_option_dispose(IO_PRIVHANDLE *phandle);
 
 static void io_file_seterr(IO_PRIVHANDLE *phandle, ERR_T errcode);
@@ -239,6 +247,7 @@ static char *io_err_strings[] = {
     "Invalid or unknown protocol",
     "IO Handle not open",
     "Unsupported IO function",
+    "Buffer too small",
     "unknown internal error"
 };
 
@@ -901,13 +910,19 @@ int io_readline_timeout(IO_PRIVHANDLE *phandle, unsigned char *buf,
     uint32_t numread = 0;
     uint32_t to_read;
     int ascii = 0;
+    int esmall = 0;
+    uint32_t total_to_read = *len-1;
 
     if(io_option_get(phandle,"ascii",NULL))
         ascii = 1;
 
+    if(io_option_get(phandle,"esmall",NULL)) {
+        esmall = 1;
+    }
+
     io_err_printf(IO_LOG_SPAM,"entering readline_timeout\n");
 
-    while(numread < (*len - 1)) {
+    while(numread < total_to_read) {
         to_read = 1;
         if(io_read_timeout(phandle, buf + numread, &to_read, ms)) {
             if(!to_read) { /* EOF */
@@ -924,13 +939,19 @@ int io_readline_timeout(IO_PRIVHANDLE *phandle, unsigned char *buf,
                 numread++;
             }
         } else {
+            return FALSE;
         }
     }
 
-    buf[numread-1] = '\0';
-    *len = numread-1;
+    buf[numread] = '\0';
+    *len = numread;
 
     io_err_printf(IO_LOG_LOG,"Buffer too small in io_readline_timeout()\n");
+    if(esmall) {
+        io_err(phandle,IO_E_BUFFER);
+        return FALSE;
+    }
+
     return TRUE;
 }
 
@@ -955,6 +976,101 @@ int io_readline(IO_PRIVHANDLE *phandle, unsigned char *buf,
     io_err_printf(IO_LOG_SPAM,"entering io_readline\n");
     return io_readline_timeout(phandle, buf, len, NULL);
 }
+
+/**
+ * read a line from an io device, allocating as much space as necessary.
+ *
+ * There should really be some kind of sane maximum, but we don't have
+ * that kind of crazy thing around here.
+ *
+ * Buffer returned in buf must be freed by client
+ *
+ * @param phandle handle of io device to read from
+ * @param buf allocated
+ * @returns TRUE on success, or FALSE on error
+ */
+int io_allocline(IO_PRIVHANDLE *phandle, unsigned char **buf) {
+    io_err_printf(IO_LOG_SPAM,"entering io_allocline\n");
+    return io_allocline_timeout(phandle, buf, NULL);
+}
+
+/**
+ * read a line from an io device, allocating as much space as necessary,
+ * with a timeout.
+ *
+ * There should really be some kind of sane maximum, but we don't have
+ * that kind of crazy thing around here.
+ *
+ * Buffer returned in buf must be freed by client
+ *
+ * @param phandle handle of io device to read from
+ * @param buf allocated
+ * @returns TRUE on success, FALSE with *ms=0 on timeout, or FALSE on error
+ */
+int io_allocline_timeout(IO_PRIVHANDLE *phandle, unsigned char **buf, uint32_t *ms) {
+    int esmall=0;
+    int result;
+    uint32_t size=10;
+    uint32_t old_size;
+    uint32_t len, to_read;
+    unsigned char *ptr;
+
+    ASSERT(buf);
+
+    if(!buf) {
+        io_err(phandle,IO_E_BADFN);
+        return FALSE;
+    }
+
+    if(io_option_get(phandle,"esmall",NULL) != NULL) {
+        esmall=1;
+    } else {
+        io_option_add(phandle,"esmall","1");
+    }
+
+    old_size = 0;
+
+    ptr = (unsigned char*)malloc(size);
+    if(!ptr) io_err_printf(IO_LOG_FATAL,"Error in malloc\n");
+
+    len = 0;
+
+    while(1) {
+        to_read = size - len;
+        result = io_readline_timeout(phandle, ptr+len, &to_read, ms);
+        io_err_printf(IO_LOG_DEBUG,"Read %d bytes\n",to_read);
+        len += to_read;
+
+        if((result) || (IO_E_BUFFER != io_errcode(phandle))) {
+            break;
+        }
+
+        /* resize the buffer */
+        io_err_printf(IO_LOG_DEBUG,"Resizing buffer from %d\n",size);
+        old_size = size;
+        size = size * 2;
+        if(size > MAX_LINESIZE)
+            break;
+
+        ptr = (unsigned char*)realloc(ptr, size);
+        if(!ptr) io_err_printf(IO_LOG_FATAL,"Error in malloc\n");
+    }
+
+    if(!esmall) {
+        io_option_remove(phandle,"esmall");
+    }
+
+
+    if(!len) {
+        free(ptr);
+        ptr = NULL;
+    }
+
+    *buf = ptr;
+
+    return result;
+}
+
 
 
 
@@ -2285,7 +2401,6 @@ int io_socket_write(IO_PRIVHANDLE *phandle, unsigned char *buf,uint32_t *len) {
     ssize_t byteswritten=0;
     uint32_t totalbytes;
     unsigned char *bufp;
-    long blocking = 0;
 
     ASSERT(phandle);
     ASSERT(phandle->private);
@@ -2698,6 +2813,43 @@ int io_option_dispose(IO_PRIVHANDLE *phandle) {
         if(pcurrent->key)   free(pcurrent->key);
         if(pcurrent->value) free(pcurrent->value);
         phandle->pol = pcurrent->next;
+        free(pcurrent);
+    }
+    io_unlock();
+
+    return TRUE;
+}
+
+
+
+/**
+ * remove an option from the option list
+ *
+ * @param key option to remove
+ * @returns TRUE on success
+ */
+int io_option_remove(IO_PRIVHANDLE *phandle, char *key) {
+    IO_OPTIONLIST *plast, *pcurrent;
+
+    ASSERT(phandle);
+    if(!phandle) return FALSE;
+
+    io_lock();
+    plast = pcurrent = phandle->pol;
+    while((pcurrent) && (0 != strcmp(pcurrent->key, key))) {
+        plast = pcurrent;
+        pcurrent = pcurrent->next;
+    }
+
+    if(pcurrent) {
+        /* we found the option, now get rid of it */
+        if(plast == pcurrent) {
+            phandle->pol = pcurrent->next;
+        } else {
+            plast->next = pcurrent->next;
+        }
+        if(pcurrent->key)   free(pcurrent->key);
+        if(pcurrent->value) free(pcurrent->value);
         free(pcurrent);
     }
     io_unlock();

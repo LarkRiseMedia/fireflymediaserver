@@ -19,16 +19,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#ifdef HAVE_CONFIG_H
-# include "config.h"
-#endif
-
-#include <limits.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#include "includes.h"
 
 #include "conf.h"
 #include "daapd.h"
@@ -37,6 +28,7 @@
 #include "smart-parser.h"
 #include "ff-dbstruct.h"
 #include "ff-plugins.h"
+#include "os.h"
 #include "playlists.h"
 #include "redblack.h"
 #include "util.h"
@@ -90,8 +82,9 @@ static PLAYLIST *pl_find(uint32_t id);
 static void pl_save(PLAYLIST *ppl);
 static void pl_set_error(char **pe, int error, ...);
 static void pl_purge(PLAYLIST *ppl);
-static int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid);
+static int pl_add_playlist_item_nolock(char **pe, PLAYLIST *ppl, uint32_t songid);
 static int pl_contains_item(uint32_t pl_id, uint32_t song_id);
+static int pl_compare(const void *v1, const void *v2, const void *vso);
 
 /* here's a nice hack... */
 MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
@@ -102,7 +95,11 @@ MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
 int pl_load(char *filename) {
     PLAYLIST_NATIVE *ppln;
     PLAYLIST *ppl;
+    PLAYLIST *pcurrent;
     HANDLE handle;
+    unsigned char *line;
+    char *sep;
+    uint32_t id;
 
     DPRINTF(E_INF,L_PL,"Loading playlist %s\n",filename);
     handle = io_new();
@@ -122,9 +119,49 @@ int pl_load(char *filename) {
     memset(ppln,0,sizeof(PLAYLIST_NATIVE));
     memset(ppl,0,sizeof(PLAYLIST));
 
+    ppl->prb = rbinit(pl_compare,NULL);
     ppl->ppln = ppln;
 
     // load up the file...
+    while(io_allocline(handle, &line) && line) {
+        DPRINTF(E_DBG,L_PL,"Loaded line: %s",line);
+
+        while((line[strlen(line)-1] == '\n') || (line[strlen(line)-1] == '\r'))
+            line[strlen(line)-1] = '\0';
+
+        if(NULL != (sep = strchr((char*)line,':'))) {
+            *sep++ = '\0';
+            if(strcasecmp((char*)line,"id") == 0) {
+                ppl->ppln->id = util_atoui32(sep);
+            } else if(strcasecmp((char*)line,"name") == 0) {
+                ppl->ppln->title = strdup(sep);
+            } else if(strcasecmp((char*)line,"type") == 0) {
+                ppl->ppln->type = util_atoui32(sep);
+            } else if(strcasecmp((char*)line,"query") == 0) {
+                ppl->ppln->query = strdup(sep);
+            } else if(strcasecmp((char*)line,"timestamp") == 0) {
+                ppl->ppln->db_timestamp = util_atoui32(sep);
+            } else if(strcasecmp((char*)line,"path") == 0) {
+                ppl->ppln->path = strdup(sep);
+            } else if(strcasecmp((char*)line,"idx") == 0) {
+                ppl->ppln->idx = util_atoui32(sep);
+            }
+        } else {
+            if((id = util_atoui32((char*)line))) {
+                // must be an id?
+                pl_add_playlist_item_nolock(NULL, ppl, id);
+            }
+        }
+
+        free(line);
+    }
+
+    pcurrent = &pl_list;
+    while(pcurrent->next)
+        pcurrent = pcurrent->next;
+
+    pcurrent->next = ppl;
+    ppl->next = NULL;
 
     io_dispose(handle);
     return TRUE;
@@ -515,11 +552,19 @@ PLAYLIST *pl_find(uint32_t id) {
 
 int pl_add_playlist_item(char **pe, uint32_t playlistid, uint32_t songid) {
     int result;
+    PLAYLIST *ppl;
 
     DPRINTF(E_DBG,L_PL,"Adding item %d to playlist %d\n",songid, playlistid);
 
     //util_mutex_lock(l_pl);
-    result = pl_add_playlist_item_nolock(pe, playlistid, songid);
+    ppl = pl_find(playlistid);
+    if(NULL == ppl) {
+        DPRINTF(E_DBG,L_PL,"Can't find playlist in add_item\n");
+        pl_set_error(pe,PL_E_NOTFOUND,playlistid);
+        return PL_E_NOTFOUND;
+    }
+
+    result = pl_add_playlist_item_nolock(pe, ppl, songid);
     //util_mutex_unlock(l_pl);
 
     return result;
@@ -532,18 +577,11 @@ int pl_add_playlist_item(char **pe, uint32_t playlistid, uint32_t songid) {
  * @param pe error buffer
  * @param
  */
-int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid) {
+int pl_add_playlist_item_nolock(char **pe, PLAYLIST *ppl, uint32_t songid) {
     /* find the playlist */
-    PLAYLIST *plcurrent;
     MEDIA_NATIVE *pmn;
     uint32_t *pid;
     const void *val;
-
-    if(NULL == (plcurrent = pl_find(playlistid))) {
-        DPRINTF(E_DBG,L_PL,"Can't find playlist in add_item\n");
-        pl_set_error(pe,PL_E_NOTFOUND,playlistid);
-        return PL_E_NOTFOUND;
-    }
 
     /* make sure it's a valid song id */
     /* FIXME: replace this with a db_exists type function */
@@ -557,7 +595,7 @@ int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid)
     db_dispose_item(pmn);
 
     /* okay, it's valid, so let's add it */
-    if(!plcurrent->prb)
+    if(!ppl->prb)
         DPRINTF(E_FATAL,L_PL,"redblack tree not present in playlist\n");
 
     pid = (uint32_t *)malloc(sizeof(uint32_t));
@@ -568,15 +606,15 @@ int pl_add_playlist_item_nolock(char **pe, uint32_t playlistid, uint32_t songid)
 
     *pid = songid;
 
-    val = rbsearch((const void*)pid, plcurrent->prb);
+    val = rbsearch((const void*)pid, ppl->prb);
     if(!val) {
         DPRINTF(E_FATAL,L_SCAN,"redblack tree insert error\n");
         pl_set_error(pe,PL_E_RBTREE);
         return PL_E_RBTREE;
     }
 
-    plcurrent->ppln->items++;
-    DPRINTF(E_DBG,L_PL,"New playlist size: %d\n",plcurrent->ppln->items);
+    ppl->ppln->items++;
+    DPRINTF(E_DBG,L_PL,"New playlist size: %d\n",ppl->ppln->items);
 
     return PL_E_SUCCESS;
 }
@@ -1145,6 +1183,65 @@ void pl_advise_del(uint32_t id) {
  * @returns DB_E_SUCCESS on success, failure code & pe allocated otherwise
  */
 int pl_init(char **pe) {
+    DIR *playlist_dir;
+    char de[sizeof(struct dirent) + MAXNAMLEN + 1];
+    struct dirent *pde;
+    char *path;
+    char *relative_path = NULL;
+    char *cache_dir;
+    int err;
+    struct stat sb;
+
+    /* db is open, Library playlist is set up... load persistent playlists */
+    cache_dir =  conf_alloc_string("general","cache_dir",NULL);
+    if(!cache_dir) {
+        DPRINTF(E_LOG,L_PL,"Can't find cache_dir.  Not loading playlists\n");
+        return DB_E_SUCCESS;
+    }
+
+    path = util_asprintf("%s/playlists", cache_dir);
+    free(cache_dir);
+    if(!path) DPRINTF(E_FATAL,L_PL,"Malloc error in pl_init\n");
+
+    if(NULL == (playlist_dir = opendir(path))) {
+        free(path);
+        DPRINTF(E_LOG,L_SCAN,"opendir (%s): %s\n",path,strerror(errno));
+        return DB_E_SUCCESS;
+    }
+
+    /* find the playlists */
+    while(1) {
+        pde = (struct dirent *)&de;
+        err = readdir_r(playlist_dir,(struct dirent*)&de, &pde);
+        if(err == -1) {
+            /* stop scanning, but return success to continue startup */
+            DPRINTF(E_LOG,L_PL,"Error scanning playlists: %s\n",strerror(errno));
+            closedir(playlist_dir);
+            free(path);
+            return DB_E_SUCCESS;
+        }
+
+        if(!pde)
+            break;
+
+        if(!strcmp(pde->d_name,".") || (!strcmp(pde->d_name,"..")))
+            continue;
+
+        relative_path = util_asprintf("%s/%s",path,pde->d_name);
+
+        if(!os_lstat(relative_path, &sb)) {
+            if(S_ISDIR(sb.st_mode))
+                continue;
+        }
+
+        /* do stuff with playlist */
+        DPRINTF(E_DBG,L_PL,"Found playlist %s\n",relative_path);
+        pl_load(relative_path);
+
+        free(relative_path);
+    }
+
+    free(path);
     return DB_E_SUCCESS;
 }
 

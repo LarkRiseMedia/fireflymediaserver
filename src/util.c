@@ -766,6 +766,20 @@ uint32_t util_get_threadid(void) {
     return thread_id;
 }
 
+/* FIXME: assumes sizeof(long) >= 4  -- should verify that in configure.in */
+uint32_t util_atoui32(char *string) {
+    if(string && strlen(string))
+        return (uint32_t)strtoul(string,NULL,10);
+    return 0;
+}
+
+/* FIXME:  assumes sizeof(long long) >= 8.  Is this always true? */
+uint64_t util_atoui64(char *string) {
+    if(string && strlen(string))
+        return strtoull(string,NULL,10);
+    return 0;
+}
+
 
 
 #ifdef DEBUG_MEM

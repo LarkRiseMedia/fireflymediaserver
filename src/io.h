@@ -85,6 +85,9 @@ extern int io_buffer(IOHANDLE io); /* unimplemented */
 extern int io_readline(IOHANDLE io, unsigned char *buf, uint32_t *len);
 extern int io_readline_timeout(IOHANDLE io, unsigned char *buf, uint32_t *len,
     uint32_t *ms);
+extern int io_allocline(IOHANDLE io, unsigned char **buf);
+extern int io_allocline_timeout(IOHANDLE io, unsigned char **buf, uint32_t *ms);
+
 extern char* io_errstr(IOHANDLE io);
 extern int io_errcode(IOHANDLE io);
 extern void io_dispose(IOHANDLE io);

@@ -57,5 +57,8 @@ extern char *util_aasprintf(char *string, char *fmt, ...);
 
 extern uint32_t util_get_threadid(void);
 
+extern uint32_t util_atoui32(char *string);
+extern uint64_t util_atoui64(char *string);
+
 #endif /* _UTIL_H_ */
 

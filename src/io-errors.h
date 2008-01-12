@@ -27,7 +27,8 @@
 #define IO_E_BADPROTO        0x01000001 /**< Bad protocol type, unhandled URI */
 #define IO_E_NOTINIT         0x01000002 /**< io object not initialized with new */
 #define IO_E_BADFN           0x01000003 /**< uniplemented io function */
-#define IO_E_INTERNAL        0x01000004 /**< something fatal internally */
+#define IO_E_BUFFER          0x01000004 /**< buffer too small */
+#define IO_E_INTERNAL        0x01000005 /**< something fatal internally */
 
 #define IO_E_FILE_OTHER      0x00000000 /**< Native error */
 #define IO_E_FILE_NOTOPEN    0x02000001 /**< operation on closed file */

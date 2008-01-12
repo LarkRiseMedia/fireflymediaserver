@@ -211,8 +211,6 @@ static MEDIA_STRING *db_native_to_string(MEDIA_NATIVE *pmon);
 static void db_set_error(char **pe, int err, ...);
 
 static char *db_util_strdup(char *string);
-static uint32_t db_util_atoui32(char *string);
-static uint64_t db_util_atoui64(char *string);
 
 static int db_enum_items_start(char **pe, DB_QUERY *pinfo);
 static int db_enum_playlist_start(char **pe, DB_QUERY *pinfo);
@@ -239,8 +237,8 @@ MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
 int db_del_nolock(char **pe, uint32_t id);
 
 #define DB_STR_COPY(field) pnew->field=db_util_strdup(pmos->field)
-#define DB_INT32_COPY(field) pnew->field=db_util_atoui32(pmos->field)
-#define DB_INT64_COPY(field) pnew->field=db_util_atoui64(pmos->field)
+#define DB_INT32_COPY(field) pnew->field=util_atoui32(pmos->field)
+#define DB_INT64_COPY(field) pnew->field=util_atoui64(pmos->field)
 
 
 
@@ -698,15 +696,15 @@ int db_init(int reload) {
             DPRINTF(E_FATAL,L_DB,"Malloc error allocating path map entry\n");
 
         pnew->path = strdup(pmo->path);
-        pnew->index = db_util_atoui32(pmo->idx);
-        pnew->id = db_util_atoui32(pmo->id);
+        pnew->index = util_atoui32(pmo->idx);
+        pnew->id = util_atoui32(pmo->id);
         pnew->fetched = 0;
 
         if(!rbsearch((const void*)pnew, db_path_lookup)) {
             DPRINTF(E_FATAL,L_DB,"Can't insert into path map\n");
         }
 
-        m_id = db_util_atoui32(pmo->id);
+        m_id = util_atoui32(pmo->id);
         if(m_id) {
             if(PL_E_SUCCESS != (result = pl_add_playlist_item(&pe, 1, m_id))) {
                 DPRINTF(E_LOG,L_DB,"Error inserting item into library: %s\n",
@@ -719,6 +717,9 @@ int db_init(int reload) {
     }
 
     db_pfn->db_enum_end(NULL,opaque);
+
+    pl_init(NULL);
+
     return DB_E_SUCCESS;
 }
 
@@ -1632,19 +1633,5 @@ char *db_util_strdup(char *string) {
         return strdup(string);
 
     return NULL;
-}
-
-/* FIXME: assumes sizeof(long) >= 4  -- should verify that in configure.in */
-uint32_t db_util_atoui32(char *string) {
-    if(string && strlen(string))
-        return (uint32_t)strtoul(string,NULL,10);
-    return 0;
-}
-
-/* FIXME:  assumes sizeof(long long) >= 8.  Is this always true? */
-uint64_t db_util_atoui64(char *string) {
-    if(string && strlen(string))
-        return strtoull(string,NULL,10);
-    return 0;
 }
 

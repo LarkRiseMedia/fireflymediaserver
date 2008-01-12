@@ -667,6 +667,7 @@ int conf_read(char *file) {
     /* TODO: linebuffered IO support */
     len = sizeof(linebuffer);
     while(io_readline(hconfig,(unsigned char *)linebuffer,&len) && len) {
+        DPRINTF(E_SPAM,L_CONF,"Read line: %s",linebuffer);
         line++;
         linebuffer[CONF_LINEBUFFER] = '\0';
         ws=0;
