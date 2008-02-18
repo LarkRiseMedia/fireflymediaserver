@@ -60,7 +60,6 @@ typedef struct db_sqlite2_enum_helper_t {
 
 /* Globals */
 static pthread_mutex_t db_sqlite2_mutex;
-static pthread_mutexattr_t db_sqlite2_mutexattr;
 static pthread_key_t db_sqlite2_key;
 static char db_sqlite2_path[PATH_MAX + 1];
 extern char *db_sqlite2_initial;
@@ -181,7 +180,8 @@ int db_sqlite2_add(char **pe, MEDIA_NATIVE *pmo) {
     db_sqlite2_unlock();
 
     if(DB_E_SUCCESS == (err = db_sqlite2_exec(pe, E_FATAL, "%s", sql))) {
-        pmo->id = (uint32_t)db_sqlite2_insert_id();
+        if(!pmo->id)
+            pmo->id = (uint32_t)db_sqlite2_insert_id();
     }
 
     return err;
@@ -276,23 +276,9 @@ void db_sqlite2_unlock(void) {
  * @param version version to set
  */
 void db_sqlite2_set_version(int version) {
-    IOHANDLE handle;
-    char *cache_dir;
+    db_sqlite2_exec(NULL,E_DBG,"update config set value=%d where term='version'",
+                        version);
 
-    handle = io_new();
-    if(!handle) DPRINTF(E_FATAL,L_DB,"Can't alloc handle in set_version\n");
-
-    cache_dir = conf_alloc_string("general","cache_dir",NULL);
-    if(!cache_dir) DPRINTF(E_FATAL,L_DB,"general/cache_dir not set\n");
-
-    if(!io_open(handle,"file://%s/db.version?mode=w&ascii=1",cache_dir)) {
-        DPRINTF(E_FATAL,L_DB,"Can't open db.version: %s\n",io_errstr(handle));
-        free(cache_dir);
-    }
-
-    free(cache_dir);
-    io_printf(handle,"%d\n",version);
-    io_dispose(handle);
 }
 
 int db_sqlite2_fetch_int(char **pe, int *ival, char *fmt, ...) {
@@ -320,63 +306,33 @@ int db_sqlite2_fetch_int(char **pe, int *ival, char *fmt, ...) {
     sqlite_freemem(query);
     db_sqlite2_unlock();
 
-    result = atoi(row[0]);
-    *ival = result;
+    if(row) {
+        result = atoi(row[0]);
+        *ival = result;
+    } else {
+        err = DB_E_NOROWS;
+    }
 
     db_sqlite2_dispose_row(opaque);
     return err;
 }
 
 /**
- * returns the db version of the current database
+ * returns the db version of the current database.  Returns
+ * zero on error.
  *
  * @returns db version
  */
 int db_sqlite2_db_version(void) {
     char *pe;
     int version;
-    IOHANDLE handle;
-    char *cache_dir;
-    char linebuffer[20];
-    uint32_t bufferlen;
 
-    /* first, try and get it from the config table, if it exists */
-
-    if(DB_E_SUCCESS ==
-       db_sqlite2_fetch_int(&pe, &version,"select value from config where "
-                            "term='version'")) {
-        db_sqlite2_exec(NULL,E_DBG,"drop table config");
-        db_sqlite2_set_version(version);
+    if(DB_E_SUCCESS == db_sqlite2_fetch_int(&pe, &version, "select value from"
+                                            " config where term='version'")) {
         return version;
-    } else {
-        if(pe) free(pe);
     }
 
-    cache_dir = conf_alloc_string("general","cache_dir",NULL);
-    if(!cache_dir) return 0;
-
-    /* otherwise, read it from the db.version file */
-    handle = io_new();
-    if(!handle) return 0;
-
-    if(!io_open(handle,"file://%s/db.version?ascii=1",cache_dir)) {
-        free(cache_dir);
-        io_dispose(handle);
-        return 0;
-    }
-
-    free(cache_dir);
-
-    io_buffer(handle);
-    bufferlen = sizeof(linebuffer);
-    if(!io_readline(handle,(unsigned char *)linebuffer,&bufferlen)) {
-        version = 0;
-    } else {
-        version = atoi(linebuffer);
-    }
-
-    io_dispose(handle);
-    return version;
+    return 0;
 }
 
 /**
@@ -449,10 +405,11 @@ int db_sqlite2_open(char **pe, char *dsn) {
     int version;
     int max_version;
     int result;
+    pthread_mutexattr_t mutexattr;
 
-    pthread_mutexattr_init(&db_sqlite2_mutexattr);
-    pthread_mutexattr_settype(&db_sqlite2_mutexattr,PTHREAD_MUTEX_RECURSIVE);
-    pthread_mutex_init(&db_sqlite2_mutex,&db_sqlite2_mutexattr);
+    pthread_mutexattr_init(&mutexattr);
+    pthread_mutexattr_settype(&mutexattr,PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&db_sqlite2_mutex,&mutexattr);
 
     db_dir = conf_alloc_string("general","cache_dir",NULL);
     if(!db_dir) {
@@ -485,7 +442,7 @@ int db_sqlite2_open(char **pe, char *dsn) {
         db_sqlite2_exec(NULL,E_DBG,"drop table songs");
         db_sqlite2_exec(NULL,E_FATAL,db_sqlite2_initial);
         version = DB_SQLITE2_VERSION;
-    } else if(version != DB_SQLITE2_VERSION) {
+    } else if(version < DB_SQLITE2_VERSION) {
         /* have to do the upgrade */
         max_version = 0;
         while(db_sqlite_updates[max_version]) max_version++;
@@ -502,6 +459,14 @@ int db_sqlite2_open(char **pe, char *dsn) {
             }
             version++;
         }
+    }
+
+    if(version != DB_SQLITE2_VERSION) {
+        /* existing db too new */
+        DPRINTF(E_LOG,L_DB,"DB version %d to new.  I only understand %d.  Aborting\n",
+                version,DB_SQLITE2_VERSION);
+        db_sqlite2_set_error(pe,DB_E_WRONGVERSION);
+        return DB_E_WRONGVERSION;
     }
 
     db_sqlite2_set_version(DB_SQLITE2_VERSION);
@@ -719,7 +684,6 @@ int db_sqlite2_enum_restart(char **pe, void *opaque) {
  *
  * @returns autoupdate value
  */
-
 int db_sqlite2_insert_id(void) {
     return sqlite_last_insert_rowid(db_sqlite2_handle());
 }
@@ -767,5 +731,10 @@ char *db_sqlite2_initial =
 "   contentrating   INTEGER DEFAULT 0,\n"
 "   bits_per_sample INTEGER DEFAULT 0,\n"
 "   album_artist    VARCHAR(1024)\n"                    /* 40 */
-");\n";
-
+");\n"
+"create table config (\n"
+"   term            VARCHAR(255)    NOT NULL,\n"
+"   subterm         VARCHAR(255)    DEFAULT NULL,\n"
+"   value           VARCHAR(1024)   NOT NULL\n"
+");\n"
+"insert into config values ('version','','14');\n";

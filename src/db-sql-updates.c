@@ -469,6 +469,7 @@ char *db_sqlite_updates[] = {
     "disabled,sample_count,codectype,idx,has_video,contentrating,bits_per_sample,"
     "album_artist from tempsongs;\n"
     "commit transaction;\n"
-    "drop table tempsongs;\n",
+    "drop table tempsongs;\n"
+    "update config set value=14 where term='version';\n",
     NULL /* No more versions! */
 };

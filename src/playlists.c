@@ -91,6 +91,8 @@ MEDIA_NATIVE *db_fetch_item_nolock(char **pe, int id);
 
 /**
  * load a playlist.
+ *
+ * FIXME: should leverage add_playlist
  */
 int pl_load(char *filename) {
     PLAYLIST_NATIVE *ppln;
@@ -100,6 +102,7 @@ int pl_load(char *filename) {
     unsigned char *line;
     char *sep;
     uint32_t id;
+    int added = 1;
 
     DPRINTF(E_INF,L_PL,"Loading playlist %s\n",filename);
     handle = io_new();
@@ -126,8 +129,8 @@ int pl_load(char *filename) {
     while(io_allocline(handle, &line) && line) {
         DPRINTF(E_DBG,L_PL,"Loaded line: %s",line);
 
-        while((line[strlen(line)-1] == '\n') || (line[strlen(line)-1] == '\r'))
-            line[strlen(line)-1] = '\0';
+        while((line[strlen((char*)line)-1] == '\n') || (line[strlen((char *)line)-1] == '\r'))
+            line[strlen((char*)line)-1] = '\0';
 
         if(NULL != (sep = strchr((char*)line,':'))) {
             *sep++ = '\0';
@@ -156,12 +159,42 @@ int pl_load(char *filename) {
         free(line);
     }
 
-    pcurrent = &pl_list;
-    while(pcurrent->next)
-        pcurrent = pcurrent->next;
+    if(ppln->type & PL_DYNAMIC) {
+        ppl->pt = sp_init();
+        if(ppl->pt) {
+            if(!sp_parse(ppl->pt,ppl->ppln->query,SP_TYPE_PLAYLIST)) {
+                DPRINTF(E_LOG,L_MISC,"Bad query in %s: %s\n",ppl->ppln->title,sp_get_error(ppl->pt));
+                sp_dispose(ppl->pt);
+                added = 0;
+            }
+        } else {
+            DPRINTF(E_LOG,L_MISC,"Couldn't init parse tree\n");
+            added=0;
+        }
+    }
 
-    pcurrent->next = ppl;
-    ppl->next = NULL;
+    if(added) {
+        pcurrent = &pl_list;
+        while(pcurrent->next)
+            pcurrent = pcurrent->next;
+
+        pcurrent->next = ppl;
+        ppl->next = NULL;
+    } else {
+        /* free up the struct */
+        if(ppln) {
+            if(ppln->title) free(ppln->title);
+            if(ppln->query) free(ppln->query);
+            if(ppln->path) free(ppln->path);
+            free(ppln);
+        }
+
+        if(ppl) {
+            /* walk the tree... */
+            rbdestroy(ppl->prb);
+            free(ppl);
+        }
+    }
 
     io_dispose(handle);
     return TRUE;

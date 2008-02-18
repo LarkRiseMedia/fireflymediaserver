@@ -241,7 +241,6 @@ int db_del_nolock(char **pe, uint32_t id);
 #define DB_INT64_COPY(field) pnew->field=util_atoui64(pmos->field)
 
 
-
 void db_cache_dump(void) {
     DB_CACHE_ENTRY *pentry;
 
@@ -388,20 +387,28 @@ MEDIA_NATIVE *db_cache_fetch(char **pe, uint32_t id) {
     db_cache_dump();
 
     /* first, see if it is in the cache */
+    DPRINTF(E_DBG,L_DB,"Fetching %d from cache\n",id);
 
     config.stats.db_id_fetches++;
 
     pentry = db_cache_find(id);
     if(pentry) {
+        DPRINTF(E_DBG,L_DB,"Cache hit\n");
         config.stats.db_id_hits++;
         pmn = pentry->pmn;
         db_cache_promote(pentry);
         pentry->refcount++;
     } else {
+        DPRINTF(E_DBG,L_DB,"Cache miss\n");
         if(DB_E_SUCCESS == db_pfn->db_fetch_item(pe, id, &opaque, &pms)) {
-            pmn = db_string_to_native(pms);
+            if(pms) {
+                pmn = db_string_to_native(pms);
+                db_cache_insert(pmn);
+            }
+
             db_pfn->db_dispose_item(opaque, pms);
-            db_cache_insert(pmn);
+        } else {
+            DPRINTF(E_DBG,L_DB,"Couldn't fetch from underlying storage\n");
         }
     }
     db_cache_dump();
@@ -571,6 +578,17 @@ int db_open(char **pe, char *type, char *parameters) {
     }
 #endif
 #ifdef HAVE_LIBSQLITE3
+        db_pfn->db_open = db_sqlite3_open;
+        db_pfn->db_close = db_sqlite3_close;
+        db_pfn->db_add = db_sqlite3_add;
+        db_pfn->db_del = db_sqlite3_del;
+        db_pfn->db_enum_start = db_sqlite3_enum_items_begin;
+        db_pfn->db_enum_fetch = db_sqlite3_enum_items_fetch;
+        db_pfn->db_enum_reset = db_sqlite3_enum_restart;
+        db_pfn->db_enum_end = db_sqlite3_enum_end;
+        db_pfn->db_fetch_item = db_sqlite3_fetch_item;
+        db_pfn->db_dispose_item = db_sqlite3_dispose_item;
+        db_pfn->db_hint = db_sqlite3_hint;
 #endif
 
     if(!db_pfn) {
@@ -641,6 +659,8 @@ static int db_path_compare(const void *p1, const void *p2, const void *arg) {
     ppn1 = (DB_PATH_NODE*)p1;
     ppn2 = (DB_PATH_NODE*)p2;
 
+    DPRINTF(E_SPAM,L_DB,"Comparing %s:%d to %s:%d\n",ppn1->path,ppn1->index,
+            ppn2->path,ppn2->index);
     result = strcmp(ppn1->path, ppn2->path);
     if(result)
         return result;
@@ -741,6 +761,13 @@ int db_revision(void) {
  */
 int db_add(char **pe, MEDIA_NATIVE *pmo) {
     int result;
+    MEDIA_NATIVE *ptemp;
+
+    ptemp = db_fetch_path(NULL, pmo->path, pmo->idx);
+    if(ptemp) {
+        pmo->id = ptemp->id;
+        db_dispose_item(ptemp);
+    }
 
     pmo->time_modified = (uint32_t)time(NULL);
 
@@ -815,6 +842,9 @@ int db_enum_start(char **pe, DB_QUERY *pinfo) {
 
     if(pinfo->limit == 0)
         pinfo->limit = INT_MAX;
+
+    if(pinfo->playlist_id == 0)
+        pinfo->playlist_id = 1;
 
     pinfo->priv = (void*)malloc(sizeof(ENUMHELPER));
     if(!pinfo->priv) {
@@ -1327,12 +1357,14 @@ MEDIA_NATIVE *db_fetch_path(char **pe, char *path, int index) {
 
     pnode = (DB_PATH_NODE*)rbfind((void*)&path_node,db_path_lookup);
     if(!pnode) {
+        DPRINTF(E_DBG,L_DB,"Couldn't find %s:%d\n",path,index);
         return NULL;
     }
 
     // Mark node as fetched in case we are in a scan
     pnode->fetched = 1;
 
+    DPRINTF(E_DBG,L_DB,"Fetching item %s:%d\n",path,index);
     return db_fetch_item(pe, pnode->id);
 }
 
@@ -1567,6 +1599,11 @@ MEDIA_STRING *db_native_to_string(MEDIA_NATIVE *pmon) {
  */
 MEDIA_NATIVE *db_string_to_native(MEDIA_STRING *pmos) {
     MEDIA_NATIVE *pnew;
+
+    ASSERT(pmos);
+
+    if(!pmos)
+        return NULL;
 
     pnew = (MEDIA_NATIVE*)malloc(sizeof(MEDIA_NATIVE));
     if(!pnew)

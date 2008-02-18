@@ -88,4 +88,5 @@ extern char *db_error_list[];
 #define DB_E_PLAYLIST                0x11 /**< playlist error */
 #define DB_E_NOPATH                  0x12 /**< cache_dir not specified */
 #define DB_E_NOTIMPL                 0x13 /**< backend doesn't implement */
+
 #endif /* _DB_GENERIC_H_ */

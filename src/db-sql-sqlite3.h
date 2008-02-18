@@ -28,12 +28,17 @@ extern int db_sqlite3_close(void);
 
 /* add a media object */
 extern int db_sqlite3_add(char **pe, MEDIA_NATIVE *pmo);
+extern int db_sqlite3_del(char **pe, uint32_t id);
 
 /* walk through a table */
-extern int db_sqlite3_enum_begin(char **pe);
-extern int db_sqlite3_enum_fetch(char **pe, MEDIA_STRING **ppmo);
-extern int db_sqlite3_enum_end(char **pe);
-extern int db_sqlite3_enum_restart(char **pe);
+extern int db_sqlite3_enum_items_begin(char **pe, void **opaque);
+extern int db_sqlite3_enum_items_fetch(char **pe, void *opaque, MEDIA_STRING **ppmo);
+extern int db_sqlite3_enum_end(char **pe, void *opaque);
+extern int db_sqlite3_enum_restart(char **pe, void *opaque);
+extern int db_sqlite3_fetch_item(char **pe, uint32_t id, void **opaque, MEDIA_STRING **ppms);
+extern void db_sqlite3_dispose_item(void *opaque, MEDIA_STRING *ppms);
+extern void db_sqlite3_hint(int hint);
+
 
 #endif /* _DB_SQL_SQLITE3_ */
 

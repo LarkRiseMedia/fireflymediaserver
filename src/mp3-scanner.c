@@ -617,6 +617,7 @@ void scan_filename(char *path, int compdir, char *extensions) {
                     pmp3 = db_fetch_path(NULL,mp3_path,0);
 
                     if((!pmp3) || (pmp3->time_modified < mod_time)) {
+                        DPRINTF(E_LOG,L_SCAN,"Scanning file %s\n",mp3_path);
                         scan_music_file(path,fname,&sb,is_compdir);
                     } else {
                         DPRINTF(E_DBG,L_SCAN,"Skipping file, not modified\n");
